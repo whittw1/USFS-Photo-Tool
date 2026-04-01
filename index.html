@@ -1,0 +1,1981 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+<meta name="apple-mobile-web-app-title" content="USFS Photo Collector">
+<link rel="manifest" href="manifest.json">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+<title>USFS Photo Collector</title>
+<script>
+if ('serviceWorker' in navigator) {
+  window.addEventListener('load', () => {
+    navigator.serviceWorker.register('./sw.js').catch(() => {});
+  });
+}
+</script>
+<style>
+  :root {
+    --bg: #1a1f2e;
+    --card: #232a3b;
+    --card-alt: #2a3248;
+    --border: #3a4460;
+    --accent: #2e7d32;
+    --accent-hover: #388e3c;
+    --danger: #d94a4a;
+    --danger-hover: #e95b5b;
+    --success: #4ab86a;
+    --success-hover: #5bc87a;
+    --warning: #d9a84a;
+    --text: #e8eaf0;
+    --text-dim: #8892a8;
+    --text-label: #b0b8cc;
+    --input-bg: #1e2538;
+    --photo-bg: #161b28;
+  }
+
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, 'SF Pro Text', 'Helvetica Neue', sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    min-height: 100vh;
+    -webkit-tap-highlight-color: transparent;
+  }
+
+  /* -- Header -- */
+  .header {
+    background: var(--card);
+    border-bottom: 1px solid var(--border);
+    padding: 12px 20px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    position: sticky;
+    top: 0;
+    z-index: 100;
+  }
+  .header h1 { font-size: 17px; font-weight: 600; letter-spacing: 0.5px; }
+  .header-actions { display: flex; gap: 8px; }
+  .header-badge {
+    background: var(--accent);
+    color: white;
+    font-size: 11px;
+    font-weight: 700;
+    padding: 2px 8px;
+    border-radius: 10px;
+    margin-left: 8px;
+  }
+
+  /* -- Buttons -- */
+  .btn {
+    padding: 10px 18px;
+    border: none;
+    border-radius: 8px;
+    font-size: 15px;
+    font-weight: 600;
+    cursor: pointer;
+    transition: background 0.15s;
+    color: white;
+  }
+  .btn-accent  { background: var(--accent); }
+  .btn-accent:hover  { background: var(--accent-hover); }
+  .btn-success { background: var(--success); }
+  .btn-success:hover { background: var(--success-hover); }
+  .btn-danger  { background: var(--danger); }
+  .btn-danger:hover  { background: var(--danger-hover); }
+  .btn-warning { background: var(--warning); color: #1a1f2e; }
+  .btn-outline {
+    background: transparent;
+    border: 1.5px solid var(--border);
+    color: var(--text-dim);
+  }
+  .btn-outline:hover { border-color: var(--text-dim); color: var(--text); }
+  .btn-sm  { padding: 7px 14px; font-size: 13px; }
+  .btn:disabled { opacity: 0.4; cursor: default; }
+
+  /* -- Layout -- */
+  .container { max-width: 860px; margin: 0 auto; padding: 20px; }
+
+  /* -- Saved entries panel -- */
+  .saved-panel {
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    margin-bottom: 20px;
+    overflow: hidden;
+  }
+  .saved-panel-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 14px 20px;
+    background: var(--card-alt);
+    border-bottom: 1px solid var(--border);
+    cursor: pointer;
+  }
+  .saved-panel-header:hover { background: #313a52; }
+  .saved-panel-header h2 {
+    font-size: 14px;
+    color: var(--success);
+    text-transform: uppercase;
+    letter-spacing: 1px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+  .saved-count-badge {
+    background: var(--success);
+    color: white;
+    font-size: 12px;
+    font-weight: 700;
+    padding: 2px 9px;
+    border-radius: 10px;
+  }
+  .saved-panel-body.collapsed { display: none; }
+  .saved-item {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 10px 20px;
+    border-bottom: 1px solid var(--border);
+  }
+  .saved-item:last-child { border-bottom: none; }
+  .saved-item-thumb {
+    width: 54px;
+    height: 40px;
+    object-fit: cover;
+    border-radius: 5px;
+    flex-shrink: 0;
+    background: var(--photo-bg);
+    border: 1px solid var(--border);
+  }
+  .saved-item-thumb-empty {
+    width: 54px;
+    height: 40px;
+    border-radius: 5px;
+    flex-shrink: 0;
+    background: var(--photo-bg);
+    border: 1px dashed var(--border);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 16px;
+    color: var(--text-dim);
+  }
+  .saved-item-info { flex: 1; min-width: 0; }
+  .saved-item-name { font-size: 14px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .saved-item-detail { font-size: 12px; color: var(--text-dim); margin-top: 2px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .saved-item-actions { display: flex; gap: 6px; flex-shrink: 0; }
+  .saved-empty { padding: 20px; text-align: center; color: var(--text-dim); font-size: 13px; }
+
+  /* -- Location section -- */
+  .site-section {
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 16px 20px;
+    margin-bottom: 20px;
+  }
+  .site-section-row {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+  }
+  .site-section label {
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--text-label);
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    white-space: nowrap;
+  }
+  .site-section input {
+    flex: 1;
+    padding: 10px 14px;
+    background: var(--input-bg);
+    border: 1.5px solid var(--border);
+    border-radius: 8px;
+    color: var(--text);
+    font-size: 15px;
+    font-family: inherit;
+  }
+  .site-section input:focus { outline: none; border-color: var(--accent); }
+  .site-list-hint {
+    font-size: 11px;
+    color: var(--text-dim);
+    margin-top: 6px;
+    display: none;
+  }
+  .site-list-hint.visible { display: block; }
+  .site-import-btn {
+    flex-shrink: 0;
+    background: transparent;
+    border: 1.5px solid var(--border);
+    border-radius: 8px;
+    color: var(--text-dim);
+    padding: 9px 12px;
+    font-size: 13px;
+    font-weight: 600;
+    cursor: pointer;
+    white-space: nowrap;
+    display: flex;
+    align-items: center;
+    gap: 5px;
+  }
+  .site-import-btn:hover { border-color: var(--text-dim); color: var(--text); }
+
+  /* -- Entry form -- */
+  .entry-section {
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 20px;
+    margin-bottom: 20px;
+  }
+  .entry-section h2 {
+    font-size: 15px;
+    color: var(--accent);
+    text-transform: uppercase;
+    letter-spacing: 1px;
+    margin-bottom: 16px;
+  }
+
+  .form-group { display: flex; flex-direction: column; gap: 6px; margin-bottom: 14px; }
+  .form-group:last-of-type { margin-bottom: 0; }
+  .form-group label {
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--text-label);
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+  }
+  .form-group input {
+    padding: 12px 14px;
+    background: var(--input-bg);
+    border: 1.5px solid var(--border);
+    border-radius: 8px;
+    color: var(--text);
+    font-size: 16px;
+    font-family: inherit;
+  }
+  .form-group textarea {
+    padding: 12px 14px;
+    background: var(--input-bg);
+    border: 1.5px solid var(--border);
+    border-radius: 8px;
+    color: var(--text);
+    font-size: 15px;
+    font-family: inherit;
+    resize: vertical;
+    min-height: 90px;
+  }
+  .form-group input:focus, .form-group textarea:focus {
+    outline: none;
+    border-color: var(--accent);
+  }
+
+  /* -- Photo grid -- */
+  .photo-grid {
+    display: grid;
+    grid-template-columns: repeat(2, 1fr);
+    gap: 14px;
+    margin-top: 18px;
+  }
+  .photo-slot label {
+    display: block;
+    font-size: 11px;
+    font-weight: 600;
+    color: var(--text-label);
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    margin-bottom: 6px;
+    text-align: center;
+  }
+  .photo-capture {
+    width: 100%;
+    aspect-ratio: 4/3;
+    background: var(--photo-bg);
+    border: 2px dashed var(--border);
+    border-radius: 10px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    cursor: pointer;
+    position: relative;
+    overflow: hidden;
+    transition: border-color 0.15s;
+  }
+  .photo-capture:hover { border-color: var(--accent); }
+  .photo-capture.has-photo { border-style: solid; border-color: var(--success); }
+  .photo-capture img { width: 100%; height: 100%; object-fit: cover; position: absolute; }
+  .photo-capture .placeholder {
+    color: var(--text-dim);
+    font-size: 11px;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 5px;
+    padding: 4px;
+    text-align: center;
+  }
+  .photo-capture .placeholder svg { width: 24px; height: 24px; opacity: 0.5; }
+  .photo-capture .retake-badge {
+    position: absolute;
+    bottom: 5px;
+    right: 5px;
+    background: rgba(0,0,0,0.7);
+    color: white;
+    font-size: 10px;
+    padding: 2px 6px;
+    border-radius: 4px;
+    font-weight: 600;
+  }
+  .photo-capture .saved-badge {
+    position: absolute;
+    top: 4px;
+    left: 4px;
+    background: rgba(0,0,0,0.7);
+    color: #4ab86a;
+    font-size: 10px;
+    padding: 2px 6px;
+    border-radius: 3px;
+    font-weight: 600;
+  }
+
+  /* -- Bottom bar -- */
+  .bottom-bar {
+    position: fixed;
+    bottom: 0;
+    left: 0;
+    right: 0;
+    background: var(--card);
+    border-top: 1px solid var(--border);
+    padding: 12px 20px;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    z-index: 100;
+  }
+  .entry-count { font-size: 13px; color: var(--text-dim); }
+  .entry-count strong { color: var(--text); }
+  .bottom-spacer { height: 80px; }
+
+  input[type="file"] { display: none; }
+
+  /* -- Toast -- */
+  .toast {
+    position: fixed;
+    top: 80px;
+    left: 50%;
+    transform: translateX(-50%);
+    background: var(--success);
+    color: white;
+    padding: 12px 24px;
+    border-radius: 10px;
+    font-weight: 600;
+    font-size: 14px;
+    z-index: 300;
+    opacity: 0;
+    transition: opacity 0.3s;
+    pointer-events: none;
+    white-space: nowrap;
+  }
+  .toast.show { opacity: 1; }
+  .toast.toast-warn { background: var(--warning); color: #1a1f2e; }
+
+  /* -- Dialogs -- */
+  .dialog-overlay {
+    position: fixed;
+    inset: 0;
+    background: rgba(0,0,0,0.6);
+    z-index: 200;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 20px;
+  }
+  .dialog {
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: 16px;
+    width: 100%;
+    max-width: 380px;
+    padding: 24px;
+  }
+  .dialog h3 { font-size: 18px; margin-bottom: 10px; }
+  .dialog p  { font-size: 14px; color: var(--text-dim); margin-bottom: 18px; line-height: 1.5; }
+  .dialog-actions { display: flex; gap: 10px; justify-content: flex-end; margin-top: 16px; }
+
+  /* -- Storage indicator -- */
+  #storageIndicator { font-size: 11px; color: var(--text-dim); display: none; margin-top: 2px; }
+
+  .add-photo-btn {
+    width: 100%;
+    margin-top: 12px;
+    padding: 14px;
+    background: transparent;
+    border: 2px dashed var(--border);
+    border-radius: 10px;
+    color: var(--accent);
+    font-size: 15px;
+    font-weight: 600;
+    cursor: pointer;
+    transition: all 0.15s;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+  }
+  .add-photo-btn:hover { border-color: var(--accent); background: var(--card-alt); }
+
+  .photo-slot-extra { position: relative; }
+  .photo-slot-extra .remove-slot-btn {
+    position: absolute;
+    top: 22px;
+    right: 4px;
+    z-index: 10;
+    background: var(--danger);
+    border: none;
+    border-radius: 50%;
+    width: 22px;
+    height: 22px;
+    color: white;
+    font-size: 13px;
+    line-height: 1;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 0;
+  }
+
+  /* -- Overflow menu -- */
+  .overflow-menu-wrapper { position: relative; display: none; }
+  .overflow-btn {
+    background: transparent;
+    border: 1.5px solid var(--border);
+    color: var(--text-dim);
+    border-radius: 8px;
+    padding: 7px 12px;
+    font-size: 18px;
+    line-height: 1;
+    cursor: pointer;
+  }
+  .overflow-btn:hover { border-color: var(--text-dim); color: var(--text); }
+  .overflow-dropdown {
+    display: none;
+    position: absolute;
+    top: calc(100% + 8px);
+    right: 0;
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    min-width: 180px;
+    box-shadow: 0 8px 32px rgba(0,0,0,0.4);
+    z-index: 200;
+    overflow: hidden;
+  }
+  .overflow-dropdown.open { display: block; }
+  .overflow-item {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    width: 100%;
+    padding: 14px 18px;
+    background: transparent;
+    border: none;
+    border-bottom: 1px solid var(--border);
+    color: var(--text);
+    font-size: 15px;
+    font-weight: 500;
+    cursor: pointer;
+    text-align: left;
+  }
+  .overflow-item:last-child { border-bottom: none; }
+  .overflow-item:hover { background: var(--card-alt); }
+  .overflow-item .oi-icon { font-size: 17px; width: 22px; text-align: center; }
+
+  @media (max-width: 640px) {
+    .header-btn-secondary { display: none !important; }
+    .overflow-menu-wrapper { display: block; }
+    .header { padding: 10px 14px; }
+    .container { padding: 14px; }
+    .entry-section, .site-section { padding: 14px; }
+    .btn-sm { padding: 8px 14px; font-size: 14px; }
+    .photo-grid { gap: 10px; }
+    .bottom-bar { padding: 10px 14px; }
+    .entry-count { font-size: 12px; }
+  }
+</style>
+</head>
+<body>
+
+<!-- -- HEADER -- -->
+<div class="header">
+  <div style="display:flex;align-items:center;">
+    <div>
+      <h1 style="font-size:16px;font-weight:700;letter-spacing:0.3px;">USFS Photo Collector</h1>
+    </div>
+    <span class="header-badge" id="headerBadge" style="display:none;"></span>
+  </div>
+  <div class="header-actions">
+    <button class="btn btn-outline btn-sm header-btn-secondary" onclick="showSavedList()">&#128203; List</button>
+    <button class="btn btn-outline btn-sm header-btn-secondary" onclick="showSettings()">&#9881;</button>
+    <button class="btn btn-outline btn-sm header-btn-secondary" onclick="importBackup()">&#128229; Import</button>
+    <button class="btn btn-outline btn-sm header-btn-secondary" onclick="saveBackup()">&#128228; Backup</button>
+    <!-- Mobile overflow menu -->
+    <div class="overflow-menu-wrapper" id="overflowWrapper">
+      <button class="overflow-btn" onclick="toggleOverflow()" title="More options">&#8943;</button>
+      <div class="overflow-dropdown" id="overflowDropdown">
+        <button class="overflow-item" onclick="showSavedList();closeOverflow()">
+          <span class="oi-icon">&#128203;</span> Saved List
+        </button>
+        <button class="overflow-item" onclick="showSettings();closeOverflow()">
+          <span class="oi-icon">&#9881;</span> Settings
+        </button>
+        <button class="overflow-item" onclick="importBackup();closeOverflow()">
+          <span class="oi-icon">&#128229;</span> Import
+        </button>
+        <button class="overflow-item" onclick="saveBackup();closeOverflow()">
+          <span class="oi-icon">&#128228;</span> Backup
+        </button>
+      </div>
+    </div>
+    <button class="btn btn-accent btn-sm" onclick="showExportDialog()">&#128230; Export</button>
+  </div>
+</div>
+
+<div class="container">
+
+  <!-- -- SAVED ENTRIES -- -->
+  <div class="saved-panel" id="savedPanel">
+    <div class="saved-panel-header" onclick="toggleSavedPanel()">
+      <h2>&#9989; Saved Entries <span class="saved-count-badge" id="savedCountBadge">0</span></h2>
+      <span id="savedToggle" style="color:var(--text-dim);font-size:13px;">&#9660; Show</span>
+    </div>
+    <div class="saved-panel-body collapsed" id="savedPanelBody"></div>
+  </div>
+
+  <!-- -- LOCATION DROPDOWN -- -->
+  <div class="site-section">
+    <div class="site-section-row">
+      <label>Location</label>
+      <input type="text" id="siteName" list="siteListDL"
+        placeholder="Select or type a location"
+        oninput="autoSaveCurrent()" autocomplete="off">
+      <datalist id="siteListDL"></datalist>
+      <button class="site-import-btn" onclick="importSiteList()" title="Load location list from .txt file">
+        &#128196; Locations
+      </button>
+      <input type="file" id="siteListFile" accept=".txt" style="display:none" onchange="handleSiteListFile(event)">
+    </div>
+    <div class="site-list-hint" id="siteListHint"></div>
+  </div>
+
+  <!-- -- ENTRY FORM -- -->
+  <div class="entry-section">
+    <h2 id="entryFormTitle">&#128269; New Entry</h2>
+
+    <div class="form-group">
+      <label>Description</label>
+      <textarea id="entryDetails" placeholder="Describe what you observed..." oninput="autoSaveCurrent()"></textarea>
+    </div>
+
+    <div class="form-group">
+      <label>GPS Coordinates</label>
+      <div style="display:flex;gap:8px;align-items:stretch;">
+        <input type="text" id="gpsDisplay" readonly
+          placeholder="Auto-captured with photos or tap GPS button"
+          style="flex:1;color:var(--text-dim);font-size:13px;cursor:default;">
+        <button class="btn btn-outline btn-sm" id="gpsBtn" onclick="getGPS()"
+          title="Capture GPS coordinates"
+          style="flex-shrink:0;white-space:nowrap;padding:0 14px;display:flex;align-items:center;gap:5px;">
+          <svg id="gpsBtnIcon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="16" height="16">
+            <circle cx="12" cy="12" r="3"/>
+            <path d="M12 2v3M12 19v3M2 12h3M19 12h3"/>
+            <path d="M12 7a5 5 0 1 0 0 10A5 5 0 0 0 12 7z"/>
+          </svg>
+          <span id="gpsBtnLabel">GPS</span>
+        </button>
+        <button class="btn btn-outline btn-sm" id="gpsClearBtn" onclick="clearGPS()"
+          title="Clear GPS coordinates"
+          style="flex-shrink:0;padding:0 10px;display:none;color:var(--danger);border-color:var(--danger);">&#10005;</button>
+      </div>
+      <div id="gpsStatus" style="font-size:11px;color:var(--text-dim);margin-top:4px;display:none;"></div>
+    </div>
+
+    <!-- -- PHOTOS -- -->
+    <div class="photo-grid">
+      <div class="photo-slot">
+        <label>Photo 1</label>
+        <div class="photo-capture" onclick="takePhoto('p_main')" id="photo_p_main">
+          <span class="placeholder">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="5" width="18" height="14" rx="2"/><circle cx="12" cy="12" r="3"/><path d="M9 2h6l1 3H8l1-3z"/></svg>
+            Tap to capture
+          </span>
+        </div>
+        <input type="file" accept="image/*" capture="environment" id="file_p_main" onchange="handlePhoto(this,'p_main')">
+      </div>
+      <div class="photo-slot">
+        <label>Photo 2</label>
+        <div class="photo-capture" onclick="takePhoto('p_wide')" id="photo_p_wide">
+          <span class="placeholder">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="5" width="18" height="14" rx="2"/><circle cx="12" cy="12" r="3"/><path d="M9 2h6l1 3H8l1-3z"/></svg>
+            Tap to capture
+          </span>
+        </div>
+        <input type="file" accept="image/*" capture="environment" id="file_p_wide" onchange="handlePhoto(this,'p_wide')">
+      </div>
+    </div>
+
+    <!-- dynamic extra slots injected here -->
+    <div id="extraSlotsContainer"></div>
+
+    <button class="add-photo-btn" onclick="addPhotoSlot()">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" width="18" height="18"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+      Add Photo
+    </button>
+  </div>
+
+  <div class="bottom-spacer"></div>
+</div>
+
+<!-- -- BOTTOM BAR -- -->
+<div class="bottom-bar">
+  <div>
+    <div class="entry-count"><strong id="entryCountNum">0</strong> entries saved</div>
+    <div id="storageIndicator"><span id="storageMsg"></span></div>
+  </div>
+  <div style="display:flex;gap:8px;" id="bottomActions">
+    <button class="btn btn-warning btn-sm" id="saveBtn" onclick="saveEntryAndNew()">Save &amp; New &#9654;</button>
+    <button class="btn btn-outline btn-sm" id="cancelEditBtn" onclick="cancelEdit()" style="display:none;">Cancel</button>
+    <button class="btn btn-success btn-sm" onclick="showExportDialog()">&#128230; Export</button>
+  </div>
+</div>
+
+<!-- Hidden backup input -->
+<input type="file" id="backupFileInput" accept=".json" style="display:none" onchange="handleBackupFile(event)">
+
+<!-- -- EXPORT DIALOG -- -->
+<div class="dialog-overlay" id="exportOverlay" style="display:none;" onclick="if(event.target===this)closeExportDialog()">
+  <div class="dialog">
+    <h3>&#128230; Export</h3>
+    <p>Photos will be renamed with sequential reference numbers.<br>Enter the <strong>starting</strong> number for this session.</p>
+    <div style="display:flex;flex-direction:column;gap:5px;">
+      <label style="font-size:12px;font-weight:600;color:var(--text-label);text-transform:uppercase;letter-spacing:0.5px;">Starting Reference Number</label>
+      <input type="text" id="refStart" value="P0001" placeholder="e.g. P0001"
+        style="padding:12px 14px;background:var(--input-bg);border:1.5px solid var(--border);border-radius:8px;color:var(--text);font-size:16px;font-family:monospace;letter-spacing:1px;"
+        onkeydown="if(event.key==='Enter')runExport()">
+      <div id="refPreview" style="font-size:12px;color:var(--text-dim);margin-top:2px;"></div>
+    </div>
+    <div class="dialog-actions">
+      <button class="btn btn-outline btn-sm" onclick="closeExportDialog()">Cancel</button>
+      <button class="btn btn-success btn-sm" onclick="runExport()">&#128230; Export ZIP</button>
+    </div>
+  </div>
+</div>
+
+<!-- -- PHOTO SETTINGS DIALOG -- -->
+<div class="dialog-overlay" id="settingsOverlay" style="display:none;">
+  <div class="dialog" style="max-width:420px;">
+    <h3>&#9881; Photo Settings</h3>
+    <div style="margin-bottom:14px;">
+      <label style="display:block;font-size:13px;color:var(--text-label);margin-bottom:6px;">Resolution Preset</label>
+      <select id="photoPreset" onchange="applyPhotoPreset()"
+        style="width:100%;padding:10px;background:var(--input-bg);border:1px solid var(--border);border-radius:8px;color:var(--text);font-size:14px;-webkit-appearance:none;appearance:none;">
+        <option value="1920x1080">1920 x 1080 (Full HD) -- Default</option>
+        <option value="1280x720">1280 x 720 (HD) -- Smaller files</option>
+        <option value="2560x1440">2560 x 1440 (QHD) -- Higher detail</option>
+        <option value="custom">Custom...</option>
+        <option value="original">Original (no resize)</option>
+      </select>
+    </div>
+    <div id="customResGroup" style="display:none;margin-bottom:14px;">
+      <div style="display:flex;gap:10px;">
+        <div style="flex:1;">
+          <label style="display:block;font-size:12px;color:var(--text-label);margin-bottom:4px;">Max Width (px)</label>
+          <input type="number" id="photoMaxW" value="1920" min="320" max="4096"
+            style="width:100%;padding:8px;background:var(--input-bg);border:1px solid var(--border);border-radius:8px;color:var(--text);font-size:14px;">
+        </div>
+        <div style="flex:1;">
+          <label style="display:block;font-size:12px;color:var(--text-label);margin-bottom:4px;">Max Height (px)</label>
+          <input type="number" id="photoMaxH" value="1080" min="240" max="4096"
+            style="width:100%;padding:8px;background:var(--input-bg);border:1px solid var(--border);border-radius:8px;color:var(--text);font-size:14px;">
+        </div>
+      </div>
+    </div>
+    <div style="margin-bottom:14px;">
+      <label style="display:block;font-size:13px;color:var(--text-label);margin-bottom:6px;">JPEG Quality: <strong id="qualityLabel">80%</strong></label>
+      <input type="range" id="photoQuality" min="30" max="100" value="80"
+        oninput="document.getElementById('qualityLabel').textContent=this.value+'%'"
+        style="width:100%;accent-color:var(--accent);">
+      <div style="display:flex;justify-content:space-between;font-size:11px;color:var(--text-dim);margin-top:2px;">
+        <span>Smaller files</span><span>Higher quality</span>
+      </div>
+    </div>
+    <div style="background:var(--input-bg);border-radius:8px;padding:10px 12px;font-size:12px;color:var(--text-dim);margin-bottom:14px;">
+      Estimated size: <strong id="estFileSize" style="color:var(--text);">~200-400 KB per photo</strong>
+    </div>
+    <div class="dialog-actions">
+      <button class="btn btn-outline btn-sm" onclick="resetPhotoSettings()">Reset</button>
+      <button class="btn btn-accent btn-sm" onclick="savePhotoSettings()">Save Settings</button>
+    </div>
+  </div>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<script>
+// ============================================================================
+// CONSTANTS — unique keys so USFS and DLA apps don't collide on same device
+// ============================================================================
+const PHOTO_SLOTS = ['p_main', 'p_wide'];
+const PHOTO_SLOT_NAMES = { p_main: 'Photo 1', p_wide: 'Photo 2' };
+const PHOTO_DEFAULTS = { maxWidth: 1920, maxHeight: 1080, quality: 0.80, preset: '1920x1080' };
+const LS_SAVED   = 'usfs_saved';
+const LS_CURRENT = 'usfs_current';
+const LS_PHOTOS  = 'usfs_photo_settings';
+const LS_SITES   = 'usfs_site_list';
+const IDB_NAME   = 'usfs_photos_v1';
+
+// ============================================================================
+// STATE
+// ============================================================================
+let savedEntries   = [];
+let currentPhotos  = {};
+let currentEntryId = null;
+let savedPanelOpen = false;
+let extraPhotoSlots = [];
+let siteList       = [];
+let currentGPS     = null;
+let editingIndex   = null;
+
+// ============================================================================
+// INIT
+// ============================================================================
+function init() {
+  currentEntryId = genId();
+  openPhotoDB().then(() => {
+    const testKey = '__idb_test__';
+    savePhotoToDB(testKey, new ArrayBuffer(4), 'test')
+      .then(() => getPhotoFromDB(testKey))
+      .then(r => {
+        if (r && r.data) { deletePhotoFromDB(testKey); }
+        else              { idbAvailable = false; }
+      })
+      .catch(() => { idbAvailable = false; });
+  }).catch(() => { idbAvailable = false; });
+
+  loadAll();
+  renderSavedPanel();
+  updateHeaderBadge();
+  checkStorage();
+
+  // Load saved location list
+  try {
+    const sl = localStorage.getItem(LS_SITES);
+    if (sl) siteList = JSON.parse(sl);
+  } catch(e) {}
+  populateSiteDatalist();
+
+  // Auto-fill location from today's most recent saved entry
+  if (!document.getElementById('siteName').value.trim()) {
+    const today = new Date().toDateString();
+    const todayEntry = [...savedEntries].reverse().find(e => {
+      return e.siteName && e.timestamp && new Date(e.timestamp).toDateString() === today;
+    });
+    if (todayEntry) {
+      document.getElementById('siteName').value = todayEntry.siteName;
+    }
+  }
+
+  // Wire up ref number live preview
+  const inp = document.getElementById('refStart');
+  if (inp) inp.addEventListener('input', updateRefPreview);
+}
+
+// ============================================================================
+// LOCATION LIST
+// ============================================================================
+function populateSiteDatalist() {
+  const dl   = document.getElementById('siteListDL');
+  const hint = document.getElementById('siteListHint');
+  if (!dl) return;
+  dl.innerHTML = siteList.map(s => `<option value="${s.replace(/"/g,'&quot;')}">`).join('');
+  if (siteList.length > 0) {
+    hint.textContent = `${siteList.length} location${siteList.length !== 1 ? 's' : ''} loaded — tap the field to see the list`;
+    hint.classList.add('visible');
+  } else {
+    hint.classList.remove('visible');
+  }
+}
+
+function importSiteList() {
+  document.getElementById('siteListFile').value = '';
+  document.getElementById('siteListFile').click();
+}
+
+function handleSiteListFile(event) {
+  const file = event.target.files[0];
+  if (!file) return;
+  const reader = new FileReader();
+  reader.onload = e => {
+    const lines = e.target.result
+      .split(/\r?\n/)
+      .map(l => l.trim())
+      .filter(l => l.length > 0 && !l.startsWith('#'));
+
+    if (lines.length === 0) { showToast('No locations found in file', true); return; }
+
+    siteList = lines;
+    try { localStorage.setItem(LS_SITES, JSON.stringify(siteList)); } catch(e) {}
+    populateSiteDatalist();
+    showToast(`\u2714 Loaded ${lines.length} location${lines.length !== 1 ? 's' : ''}`);
+  };
+  reader.readAsText(file);
+}
+
+function genId() {
+  return 'e_' + Date.now() + '_' + Math.random().toString(36).slice(2,6);
+}
+
+// ============================================================================
+// DYNAMIC PHOTO SLOTS
+// ============================================================================
+function addPhotoSlot() {
+  const slotId = 'p_extra_' + extraPhotoSlots.length;
+  extraPhotoSlots.push(slotId);
+  const num = 2 + extraPhotoSlots.length;
+
+  const container = document.getElementById('extraSlotsContainer');
+
+  const wrapper = document.createElement('div');
+  wrapper.className = 'photo-grid photo-slot-extra';
+  wrapper.id = 'wrapper_' + slotId;
+  wrapper.style.marginTop = '12px';
+  wrapper.innerHTML = `
+    <div class="photo-slot" style="grid-column:1/span 1;">
+      <label>Photo ${num}</label>
+      <div class="photo-capture" onclick="takePhoto('${slotId}')" id="photo_${slotId}">
+        <span class="placeholder">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <rect x="3" y="5" width="18" height="14" rx="2"/>
+            <circle cx="12" cy="12" r="3"/>
+            <path d="M9 2h6l1 3H8l1-3z"/>
+          </svg>
+          Tap to capture
+        </span>
+      </div>
+      <input type="file" accept="image/*" capture="environment" id="file_${slotId}" onchange="handlePhoto(this,'${slotId}')">
+    </div>
+    <div style="display:flex;align-items:flex-end;padding-bottom:4px;">
+      <button class="btn btn-outline btn-sm" onclick="removePhotoSlot('${slotId}')"
+        style="color:var(--danger);border-color:var(--danger);padding:6px 12px;">
+        \u2715 Remove
+      </button>
+    </div>`;
+
+  container.appendChild(wrapper);
+  setTimeout(() => wrapper.scrollIntoView({ behavior: 'smooth', block: 'center' }), 80);
+  autoSaveCurrent();
+}
+
+function removePhotoSlot(slotId) {
+  const wrapper = document.getElementById('wrapper_' + slotId);
+  if (wrapper) wrapper.remove();
+  extraPhotoSlots = extraPhotoSlots.filter(s => s !== slotId);
+  delete currentPhotos[slotId];
+  renumberExtraSlots();
+  autoSaveCurrent();
+}
+
+function renumberExtraSlots() {
+  extraPhotoSlots.forEach((slotId, i) => {
+    const label = document.querySelector(`#wrapper_${slotId} .photo-slot label`);
+    if (label) label.textContent = 'Photo ' + (3 + i);
+  });
+}
+
+function getAllCurrentSlots() {
+  return ['p_main', 'p_wide', ...extraPhotoSlots];
+}
+
+// ============================================================================
+// SAVE & NEW
+// ============================================================================
+function saveEntryAndNew() {
+  if (editingIndex !== null) { saveEdit(); return; }
+  const location = document.getElementById('siteName').value.trim();
+  const details  = document.getElementById('entryDetails').value.trim();
+
+  if (!location && !details && Object.keys(currentPhotos).length === 0) {
+    showToast('Add a location, description, or at least one photo first', true);
+    return;
+  }
+
+  const entry = {
+    id:        currentEntryId,
+    siteName:  location,
+    location:  location,
+    details:   details,
+    latitude:  currentGPS ? currentGPS.latitude  : null,
+    longitude: currentGPS ? currentGPS.longitude : null,
+    gpsAccuracy: currentGPS ? currentGPS.accuracy : null,
+    timestamp: new Date().toISOString(),
+    photos:    Object.assign({}, currentPhotos)
+  };
+
+  savedEntries.push(entry);
+  saveAll();
+  clearEntryForm(false);
+  renderSavedPanel();
+  updateHeaderBadge();
+
+  const photoCount = getAllCurrentSlots().filter(s => entry.photos[s]).length;
+  showToast(`\u2714 Saved — ${photoCount} photo${photoCount !== 1 ? 's' : ''} \u2022 ${savedEntries.length} total`);
+}
+
+// ============================================================================
+// CLEAR FORM
+// ============================================================================
+function clearEntryForm(confirmFirst = true) {
+  if (confirmFirst) {
+    const loc = document.getElementById('siteName').value.trim();
+    const det = document.getElementById('entryDetails').value.trim();
+    if ((loc || det || Object.keys(currentPhotos).length > 0) &&
+        !confirm('Clear current entry? Unsaved data will be lost.')) return;
+  }
+
+  currentPhotos  = {};
+  currentEntryId = genId();
+  currentGPS     = null;
+
+  // Keep the location dropdown value (user typically stays at same location)
+  document.getElementById('entryDetails').value  = '';
+  updateGPSDisplay();
+
+  const PH = `<span class="placeholder">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+      <rect x="3" y="5" width="18" height="14" rx="2"/>
+      <circle cx="12" cy="12" r="3"/>
+      <path d="M9 2h6l1 3H8l1-3z"/>
+    </svg>
+    Tap to capture
+  </span>`;
+
+  PHOTO_SLOTS.forEach(slot => {
+    const el = document.getElementById('photo_' + slot);
+    if (el) { el.classList.remove('has-photo'); el.innerHTML = PH; }
+    const fi = document.getElementById('file_' + slot);
+    if (fi) fi.value = '';
+  });
+
+  // Remove all extra photo slots
+  extraPhotoSlots = [];
+  const ec = document.getElementById('extraSlotsContainer');
+  if (ec) ec.innerHTML = '';
+
+  autoSaveCurrent();
+}
+
+// ============================================================================
+// SAVED PANEL
+// ============================================================================
+function renderSavedPanel() {
+  const body  = document.getElementById('savedPanelBody');
+  const badge = document.getElementById('savedCountBadge');
+  const count = document.getElementById('entryCountNum');
+  badge.textContent = savedEntries.length;
+  count.textContent = savedEntries.length;
+
+  if (savedEntries.length === 0) {
+    body.innerHTML = '<div class="saved-empty">No entries yet. Select a location, add description + photos, then tap "Save & New".</div>';
+    return;
+  }
+
+  body.innerHTML = savedEntries.map((e, i) => {
+    const thumb = e.photos && e.photos.p_main && e.photos.p_main.thumbnail;
+    const photoCount = e.photos ? Object.keys(e.photos).length : 0;
+    const ts = e.timestamp ? new Date(e.timestamp).toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'}) : '';
+    return `
+      <div class="saved-item">
+        ${thumb
+          ? `<img class="saved-item-thumb" src="${thumb}">`
+          : `<div class="saved-item-thumb-empty">&#128247;</div>`}
+        <div class="saved-item-info">
+          <div class="saved-item-name">${e.location || '(No location)'}</div>
+          ${e.latitude != null ? `<div style="font-size:10px;color:var(--text-dim);">${e.latitude.toFixed(6)}\u00B0N, ${Math.abs(e.longitude).toFixed(6)}\u00B0${e.longitude < 0 ? 'W' : 'E'}</div>` : ''}
+          <div class="saved-item-detail">
+            ${photoCount} photo${photoCount !== 1 ? 's' : ''}
+            ${e.details ? ' \u2022 ' + e.details.slice(0,60) + (e.details.length > 60 ? '\u2026' : '') : ''}
+            ${ts ? ' \u2022 ' + ts : ''}
+          </div>
+        </div>
+        <div class="saved-item-actions">
+          <button class="btn btn-accent btn-sm" onclick="editEntry(${i})" style="padding:5px 10px;font-size:12px;">&#9998;</button>
+          <button class="btn btn-danger btn-sm" onclick="deleteEntry(${i})" style="padding:5px 10px;font-size:12px;">&#10005;</button>
+        </div>
+      </div>`;
+  }).join('');
+}
+
+function toggleSavedPanel() {
+  savedPanelOpen = !savedPanelOpen;
+  document.getElementById('savedPanelBody').classList.toggle('collapsed', !savedPanelOpen);
+  document.getElementById('savedToggle').textContent = savedPanelOpen ? '\u25B2 Hide' : '\u25BC Show';
+}
+
+function showSavedList() {
+  if (!savedPanelOpen) toggleSavedPanel();
+  document.getElementById('savedPanel').scrollIntoView({ behavior: 'smooth' });
+}
+
+function deleteEntry(index) {
+  const loc = savedEntries[index].location || 'entry';
+  if (confirm(`Delete "${loc}"?`)) {
+    savedEntries.splice(index, 1);
+    saveAll();
+    renderSavedPanel();
+    updateHeaderBadge();
+    showToast('Entry deleted');
+  }
+}
+
+function editEntry(index) {
+  const entry = savedEntries[index];
+  if (!entry) return;
+
+  if (editingIndex !== null) {
+    if (!confirm('You are already editing an entry. Discard changes?')) return;
+  } else {
+    const loc = document.getElementById('siteName').value.trim();
+    const det = document.getElementById('entryDetails').value.trim();
+    if ((loc || det || Object.keys(currentPhotos).length > 0) &&
+        !confirm('Load saved entry for editing? Current unsaved data will be lost.')) return;
+  }
+
+  // Clear extra slots first
+  extraPhotoSlots = [];
+  const ec = document.getElementById('extraSlotsContainer');
+  if (ec) ec.innerHTML = '';
+
+  // Load entry data into form
+  document.getElementById('siteName').value      = entry.location || '';
+  document.getElementById('entryDetails').value  = entry.details  || '';
+
+  // Restore GPS
+  if (entry.latitude != null && entry.longitude != null) {
+    currentGPS = { latitude: entry.latitude, longitude: entry.longitude, accuracy: entry.gpsAccuracy || 0 };
+  } else {
+    currentGPS = null;
+  }
+  updateGPSDisplay();
+
+  currentEntryId = entry.id || genId();
+
+  // Restore photos into base slots
+  currentPhotos = {};
+  const PH = `<span class="placeholder">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+      <rect x="3" y="5" width="18" height="14" rx="2"/>
+      <circle cx="12" cy="12" r="3"/>
+      <path d="M9 2h6l1 3H8l1-3z"/>
+    </svg>
+    Tap to capture
+  </span>`;
+
+  PHOTO_SLOTS.forEach(slot => {
+    const el = document.getElementById('photo_' + slot);
+    if (!el) return;
+    const photo = entry.photos && entry.photos[slot];
+    if (photo && photo.thumbnail) {
+      currentPhotos[slot] = { ...photo };
+      el.classList.add('has-photo');
+      el.innerHTML = `<img src="${photo.thumbnail}"><span class="retake-badge">Retake</span><span class="saved-badge">\u2713</span>`;
+    } else {
+      el.classList.remove('has-photo');
+      el.innerHTML = PH;
+    }
+  });
+
+  // Restore extra photo slots
+  if (entry.photos) {
+    const extraKeys = Object.keys(entry.photos)
+      .filter(k => k.startsWith('p_extra_'))
+      .sort((a, b) => parseInt(a.replace('p_extra_','')) - parseInt(b.replace('p_extra_','')));
+
+    extraKeys.forEach((slotId, idx) => {
+      extraPhotoSlots.push(slotId);
+      const num = 3 + idx;
+      const photo = entry.photos[slotId];
+      currentPhotos[slotId] = { ...photo };
+
+      const wrapper = document.createElement('div');
+      wrapper.className = 'photo-grid photo-slot-extra';
+      wrapper.id = 'wrapper_' + slotId;
+      wrapper.style.marginTop = '12px';
+      wrapper.innerHTML = `
+        <div class="photo-slot" style="grid-column:1/span 1;">
+          <label>Photo ${num}</label>
+          <div class="photo-capture ${photo && photo.thumbnail ? 'has-photo' : ''}" onclick="takePhoto('${slotId}')" id="photo_${slotId}">
+            ${photo && photo.thumbnail
+              ? `<img src="${photo.thumbnail}"><span class="retake-badge">Retake</span><span class="saved-badge">\u2713</span>`
+              : PH}
+          </div>
+          <input type="file" accept="image/*" capture="environment" id="file_${slotId}" onchange="handlePhoto(this,'${slotId}')">
+        </div>
+        <div style="display:flex;align-items:flex-end;padding-bottom:4px;">
+          <button class="btn btn-outline btn-sm" onclick="removePhotoSlot('${slotId}')"
+            style="color:var(--danger);border-color:var(--danger);padding:6px 12px;">\u2715 Remove</button>
+        </div>`;
+      ec.appendChild(wrapper);
+    });
+  }
+
+  editingIndex = index;
+  setEditModeUI(true, entry.location || 'entry');
+
+  document.getElementById('entryFormTitle').scrollIntoView({ behavior: 'smooth', block: 'start' });
+  autoSaveCurrent();
+}
+
+function saveEdit() {
+  const location = document.getElementById('siteName').value.trim();
+  const details  = document.getElementById('entryDetails').value.trim();
+
+  if (!location && !details && Object.keys(currentPhotos).length === 0) {
+    showToast('Add a location, description, or at least one photo first', true);
+    return;
+  }
+
+  savedEntries[editingIndex] = {
+    id:          currentEntryId,
+    siteName:    location,
+    location:    location,
+    details:     details,
+    latitude:    currentGPS ? currentGPS.latitude  : null,
+    longitude:   currentGPS ? currentGPS.longitude : null,
+    gpsAccuracy: currentGPS ? currentGPS.accuracy  : null,
+    timestamp:   savedEntries[editingIndex].timestamp,
+    photos:      Object.assign({}, currentPhotos)
+  };
+
+  saveAll();
+  editingIndex = null;
+  setEditModeUI(false);
+  clearEntryForm(false);
+  renderSavedPanel();
+  updateHeaderBadge();
+  showToast('\u2714 Entry updated');
+}
+
+function cancelEdit() {
+  editingIndex = null;
+  setEditModeUI(false);
+  clearEntryForm(false);
+  showToast('Edit cancelled');
+}
+
+function setEditModeUI(editing, locationName) {
+  const title     = document.getElementById('entryFormTitle');
+  const saveBtn   = document.getElementById('saveBtn');
+  const cancelBtn = document.getElementById('cancelEditBtn');
+
+  if (editing) {
+    title.innerHTML = `&#9998; Editing: ${(locationName || 'entry').replace(/</g,'&lt;').slice(0,40)}`;
+    title.style.color = 'var(--warning)';
+    saveBtn.textContent = 'Save Edit \u2714';
+    saveBtn.className = 'btn btn-accent btn-sm';
+    cancelBtn.style.display = 'inline-block';
+  } else {
+    title.innerHTML = '&#128269; New Entry';
+    title.style.color = '';
+    saveBtn.innerHTML = 'Save &amp; New &#9654;';
+    saveBtn.className = 'btn btn-warning btn-sm';
+    cancelBtn.style.display = 'none';
+  }
+}
+
+function updateHeaderBadge() {
+  const badge = document.getElementById('headerBadge');
+  if (savedEntries.length > 0) {
+    badge.textContent = `${savedEntries.length} saved`;
+    badge.style.display = 'inline';
+  } else {
+    badge.style.display = 'none';
+  }
+}
+
+// ============================================================================
+// PHOTO HANDLING
+// ============================================================================
+function takePhoto(slotId) {
+  const old = document.getElementById('file_' + slotId);
+  const parent = old ? old.parentNode : null;
+  if (old) old.remove();
+
+  const input = document.createElement('input');
+  input.type = 'file';
+  input.accept = 'image/*';
+  input.setAttribute('capture', 'environment');
+  input.id = 'file_' + slotId;
+  input.style.display = 'none';
+  input.onchange = function () { handlePhoto(this, slotId); };
+
+  const container = document.getElementById('photo_' + slotId);
+  (parent || container.parentNode).insertBefore(input, container.nextSibling);
+
+  input.click();
+}
+
+let photoDB     = null;
+let idbAvailable = true;
+
+function openPhotoDB() {
+  return new Promise((resolve, reject) => {
+    if (photoDB) { resolve(photoDB); return; }
+    try {
+      const req = indexedDB.open(IDB_NAME, 1);
+      req.onupgradeneeded = e => {
+        const db = e.target.result;
+        if (!db.objectStoreNames.contains('photos')) db.createObjectStore('photos');
+      };
+      req.onsuccess = e => { photoDB = e.target.result; resolve(photoDB); };
+      req.onerror   = e => { idbAvailable = false; reject(e); };
+      req.onblocked = e => { idbAvailable = false; reject(e); };
+    } catch(e) { idbAvailable = false; reject(e); }
+  });
+}
+
+function savePhotoToDB(key, buf, mime) {
+  return openPhotoDB().then(db => new Promise((resolve, reject) => {
+    try {
+      const tx = db.transaction('photos', 'readwrite');
+      tx.objectStore('photos').put({ data: buf, type: mime || 'image/jpeg', size: buf.byteLength }, key);
+      tx.oncomplete = () => resolve(true);
+      tx.onerror = reject;
+      tx.onabort = reject;
+    } catch(e) { reject(e); }
+  }));
+}
+
+function getPhotoFromDB(key) {
+  return openPhotoDB().then(db => new Promise((resolve) => {
+    try {
+      const req = db.transaction('photos','readonly').objectStore('photos').get(key);
+      req.onsuccess = () => {
+        const r = req.result;
+        if (!r) { resolve(null); return; }
+        if (r.data && (r.data instanceof ArrayBuffer || r.data.byteLength !== undefined)) resolve(r);
+        else if (r instanceof ArrayBuffer) resolve({ data: r, type: 'image/jpeg', size: r.byteLength });
+        else resolve(null);
+      };
+      req.onerror = () => resolve(null);
+    } catch(e) { resolve(null); }
+  })).catch(() => null);
+}
+
+function savePhotoFallback(key, dataUrl) {
+  try { localStorage.setItem('photo_full_' + key, dataUrl); } catch(e) {}
+}
+
+function getPhotoFallback(key) {
+  try { return localStorage.getItem('photo_full_' + key); } catch(e) { return null; }
+}
+
+function deletePhotoFromDB(key) {
+  try { localStorage.removeItem('photo_full_' + key); } catch(e) {}
+  return openPhotoDB().then(db => new Promise(resolve => {
+    try {
+      const tx = db.transaction('photos','readwrite');
+      tx.objectStore('photos').delete(key);
+      tx.oncomplete = resolve;
+      tx.onerror    = resolve;
+    } catch(e) { resolve(); }
+  })).catch(() => {});
+}
+
+function photoDBKey(entryId, slotId) {
+  return entryId.replace(/[^a-zA-Z0-9_-]/g,'_') + '__' + slotId;
+}
+
+function dataUrlToUint8Array(dataUrl) {
+  const b64 = dataUrl.split(',')[1];
+  const bin = atob(b64);
+  const out = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
+  return out;
+}
+
+function handlePhoto(input, slotId) {
+  const file = input.files[0];
+  if (!file) return;
+
+  const ts       = new Date().toISOString();
+  const dbKey    = photoDBKey(currentEntryId, slotId);
+  const settings = getPhotoSettings();
+
+  const reader = new FileReader();
+  reader.onload = e => {
+    const img = new Image();
+    img.onload = () => {
+      let w = img.width, h = img.height;
+      if (w > settings.maxWidth || h > settings.maxHeight) {
+        const ratio = Math.min(settings.maxWidth / w, settings.maxHeight / h);
+        w = Math.round(w * ratio);
+        h = Math.round(h * ratio);
+      }
+      const canvas = document.createElement('canvas');
+      canvas.width = w; canvas.height = h;
+      canvas.getContext('2d').drawImage(img, 0, 0, w, h);
+      const dataUrl = canvas.toDataURL('image/jpeg', settings.quality);
+
+      if (idbAvailable) {
+        savePhotoToDB(dbKey, dataUrlToUint8Array(dataUrl).buffer, 'image/jpeg')
+          .catch(() => {
+            idbAvailable = false;
+            savePhotoFallback(dbKey, dataUrl);
+          });
+      } else {
+        savePhotoFallback(dbKey, dataUrl);
+      }
+
+      // Thumbnail for UI
+      const tc = document.createElement('canvas');
+      const ts2 = Math.min(80 / w, 1);
+      tc.width  = Math.round(w * ts2);
+      tc.height = Math.round(h * ts2);
+      tc.getContext('2d').drawImage(canvas, 0, 0, tc.width, tc.height);
+      const thumbnail = tc.toDataURL('image/jpeg', 0.4);
+
+      currentPhotos[slotId] = { timestamp: ts, thumbnail, fileType: 'image/jpeg', dbKey };
+
+      const container = document.getElementById('photo_' + slotId);
+      container.classList.add('has-photo');
+      container.innerHTML = `<img src="${thumbnail}"><span class="retake-badge">Retake</span><span class="saved-badge">\u2713</span>`;
+      const sizeKB = Math.round(dataUrl.length * 0.75 / 1024);
+      showToast(`${PHOTO_SLOT_NAMES[slotId] || 'Photo'} saved (~${sizeKB} KB)`);
+
+      // Auto-capture GPS with each photo
+      if (!currentGPS) {
+        captureGPS(true).catch(() => {});
+      }
+
+      autoSaveCurrent();
+    };
+    img.src = e.target.result;
+  };
+  reader.readAsDataURL(file);
+}
+
+// ============================================================================
+// PHOTO SETTINGS
+// ============================================================================
+function getPhotoSettings() {
+  try {
+    const s = localStorage.getItem(LS_PHOTOS);
+    if (s) return JSON.parse(s);
+  } catch(e) {}
+  return { ...PHOTO_DEFAULTS };
+}
+
+function showSettings() {
+  const s = getPhotoSettings();
+  document.getElementById('photoPreset').value   = s.preset || '1920x1080';
+  document.getElementById('photoMaxW').value     = s.maxWidth;
+  document.getElementById('photoMaxH').value     = s.maxHeight;
+  document.getElementById('photoQuality').value  = Math.round(s.quality * 100);
+  document.getElementById('qualityLabel').textContent = Math.round(s.quality * 100) + '%';
+  document.getElementById('customResGroup').style.display = s.preset === 'custom' ? 'block' : 'none';
+  updateEstimates();
+  document.getElementById('settingsOverlay').style.display = 'flex';
+}
+
+function applyPhotoPreset() {
+  const p = document.getElementById('photoPreset').value;
+  document.getElementById('customResGroup').style.display = p === 'custom' ? 'block' : 'none';
+  const presets = { '1920x1080':[1920,1080], '1280x720':[1280,720], '2560x1440':[2560,1440], 'original':[99999,99999] };
+  if (presets[p]) {
+    document.getElementById('photoMaxW').value = presets[p][0];
+    document.getElementById('photoMaxH').value = presets[p][1];
+  }
+  updateEstimates();
+}
+
+function updateEstimates() {
+  const w = parseInt(document.getElementById('photoMaxW').value) || 1920;
+  const h = parseInt(document.getElementById('photoMaxH').value) || 1080;
+  const q = parseInt(document.getElementById('photoQuality').value) || 80;
+  if (document.getElementById('photoPreset').value === 'original') {
+    document.getElementById('estFileSize').textContent = '~2-4 MB (original)';
+    return;
+  }
+  const kb = Math.max(50, Math.min(Math.round(w * h * (q/100) * 0.00015), 3000));
+  document.getElementById('estFileSize').textContent = kb < 1000 ? `~${kb} KB` : `~${(kb/1000).toFixed(1)} MB`;
+}
+
+function savePhotoSettings() {
+  const p = document.getElementById('photoPreset').value;
+  const s = {
+    maxWidth:  p === 'original' ? 99999 : (parseInt(document.getElementById('photoMaxW').value) || 1920),
+    maxHeight: p === 'original' ? 99999 : (parseInt(document.getElementById('photoMaxH').value) || 1080),
+    quality:   (parseInt(document.getElementById('photoQuality').value) || 80) / 100,
+    preset: p
+  };
+  localStorage.setItem(LS_PHOTOS, JSON.stringify(s));
+  document.getElementById('settingsOverlay').style.display = 'none';
+  showToast('Photo settings saved');
+}
+
+function resetPhotoSettings() {
+  document.getElementById('photoPreset').value  = PHOTO_DEFAULTS.preset;
+  document.getElementById('photoMaxW').value    = PHOTO_DEFAULTS.maxWidth;
+  document.getElementById('photoMaxH').value    = PHOTO_DEFAULTS.maxHeight;
+  document.getElementById('photoQuality').value = Math.round(PHOTO_DEFAULTS.quality * 100);
+  document.getElementById('qualityLabel').textContent = Math.round(PHOTO_DEFAULTS.quality * 100) + '%';
+  document.getElementById('customResGroup').style.display = 'none';
+  updateEstimates();
+}
+
+// ============================================================================
+// EXPORT (ZIP with photos + CSV + XLSX — no Photo Log)
+// ============================================================================
+function showExportDialog() {
+  const total = savedEntries.length +
+    (document.getElementById('siteName').value.trim() ||
+     document.getElementById('entryDetails').value.trim()  ||
+     Object.keys(currentPhotos).length > 0 ? 1 : 0);
+  if (total === 0) { showToast('Nothing to export yet', true); return; }
+  updateRefPreview();
+  document.getElementById('exportOverlay').style.display = 'flex';
+  setTimeout(() => document.getElementById('refStart').focus(), 100);
+}
+
+function closeExportDialog() {
+  document.getElementById('exportOverlay').style.display = 'none';
+}
+
+function updateRefPreview() {
+  const val    = document.getElementById('refStart').value.trim();
+  const parsed = parseRef(val);
+  const el     = document.getElementById('refPreview');
+  if (!parsed) {
+    el.textContent = 'Invalid format \u2014 use e.g. P0001';
+    el.style.color = 'var(--warning)';
+  } else {
+    const n2 = fmtRef(parsed.prefix, parsed.num + 1, parsed.digits);
+    const n3 = fmtRef(parsed.prefix, parsed.num + 2, parsed.digits);
+    el.textContent = `${fmtRef(parsed.prefix, parsed.num, parsed.digits)}, ${n2}, ${n3}\u2026`;
+    el.style.color = 'var(--text-dim)';
+  }
+}
+
+function parseRef(str) {
+  const m = (str||'').trim().match(/^([A-Za-z]*)(\d+)$/);
+  if (!m) return null;
+  return { prefix: m[1].toUpperCase(), num: parseInt(m[2],10), digits: m[2].length };
+}
+
+function fmtRef(prefix, num, digits) {
+  return prefix + String(num).padStart(digits,'0');
+}
+
+async function runExport() {
+  const pStr   = document.getElementById('refStart').value.trim();
+  const parsed = parseRef(pStr);
+  if (!parsed) { showToast('Invalid reference number', true); return; }
+  closeExportDialog();
+
+  let allEntries = JSON.parse(JSON.stringify(savedEntries));
+  const loc  = document.getElementById('siteName').value.trim();
+  const det  = document.getElementById('entryDetails').value.trim();
+  if (loc || det || Object.keys(currentPhotos).length > 0) {
+    allEntries.push({
+      id:        currentEntryId,
+      siteName:  loc,
+      location:  loc,
+      details:   det,
+      latitude:  currentGPS ? currentGPS.latitude  : null,
+      longitude: currentGPS ? currentGPS.longitude : null,
+      gpsAccuracy: currentGPS ? currentGPS.accuracy : null,
+      timestamp: new Date().toISOString(),
+      photos:    Object.assign({}, currentPhotos)
+    });
+  }
+
+  if (allEntries.length === 0) { showToast('Nothing to export', true); return; }
+  if (typeof XLSX === 'undefined') { showToast('SheetJS not loaded \u2014 go online once first', true); return; }
+
+  showToast('Building export\u2026');
+
+  let counter = parsed.num;
+  const nextRef = () => fmtRef(parsed.prefix, counter++, parsed.digits);
+
+  const zip         = new JSZip();
+  const photosFolder = zip.folder('photos');
+  let photoCount    = 0;
+
+  async function getBytes(dbKey, mimeType) {
+    if (idbAvailable && dbKey) {
+      try {
+        const r = await getPhotoFromDB(dbKey);
+        if (r && r.data) return { bytes: new Uint8Array(r.data), type: r.type || mimeType };
+      } catch(e) {}
+    }
+    const fallback = getPhotoFallback(dbKey);
+    if (fallback) {
+      return { bytes: dataUrlToUint8Array(fallback), type: fallback.split(';')[0].split(':')[1] || mimeType };
+    }
+    return null;
+  }
+
+  const entryMaps = [];
+  for (const entry of allEntries) {
+    const map = {};
+    const allSlots = Object.keys(entry.photos || {}).sort((a, b) => {
+      const order = s => s === 'p_main' ? 0 : s === 'p_wide' ? 1 : 2 + parseInt(s.replace('p_extra_','') || 0);
+      return order(a) - order(b);
+    });
+    for (const slot of allSlots) {
+      const info = entry.photos[slot];
+      if (info && info.dbKey) {
+        const pd = await getBytes(info.dbKey, info.fileType || 'image/jpeg');
+        if (pd) {
+          const ref = nextRef();
+          const ext = pd.type.includes('png') ? '.png' : '.jpg';
+          photosFolder.file(ref + ext, pd.bytes);
+          map[slot] = ref + ext;
+          photoCount++;
+        } else {
+          map[slot] = null;
+        }
+      } else {
+        map[slot] = null;
+      }
+    }
+    entryMaps.push(map);
+  }
+
+  const maxPhotos = Math.max(2, ...entryMaps.map(m => Object.keys(m).length));
+
+  // CSV
+  const fmtCoord = v => v != null ? Number(v).toFixed(6) : '';
+  const fmtAcc   = v => v != null ? String(v) : '';
+  const photoHeaders = Array.from({length: maxPhotos}, (_, i) => `Photo ${i+1}`);
+  let csv = ['Entry #','Location','Latitude','Longitude','GPS Accuracy (m)','Description','Timestamp',...photoHeaders].join(',') + '\n';
+  allEntries.forEach((e, i) => {
+    const m = entryMaps[i];
+    const sortedSlots = Object.keys(m).sort((a,b) => {
+      const order = s => s==='p_main'?0:s==='p_wide'?1:2+parseInt(s.replace('p_extra_','')||0);
+      return order(a)-order(b);
+    });
+    const photoVals = Array.from({length: maxPhotos}, (_, pi) => quote(m[sortedSlots[pi]] || ''));
+    csv += [
+      i + 1, quote(e.location),
+      quote(fmtCoord(e.latitude)), quote(fmtCoord(e.longitude)), quote(fmtAcc(e.gpsAccuracy)),
+      quote(e.details),
+      quote(e.timestamp ? new Date(e.timestamp).toLocaleString() : ''),
+      ...photoVals
+    ].join(',') + '\n';
+  });
+
+  // XLSX
+  const xlsxPhotoCols = Array.from({length: maxPhotos}, (_, i) => `Photo ${i+1}`);
+  const aoa = [
+    ['Entry #', 'Location', 'Latitude', 'Longitude', 'GPS Accuracy (m)', 'Description', 'Timestamp', ...xlsxPhotoCols],
+    ...allEntries.map((e, i) => {
+      const m = entryMaps[i];
+      const sortedSlots = Object.keys(m).sort((a,b) => {
+        const order = s => s==='p_main'?0:s==='p_wide'?1:2+parseInt(s.replace('p_extra_','')||0);
+        return order(a)-order(b);
+      });
+      const photoVals = Array.from({length: maxPhotos}, (_, pi) => m[sortedSlots[pi]] || '');
+      return [
+        i + 1, e.location || '',
+        e.latitude != null ? e.latitude : '', e.longitude != null ? e.longitude : '', e.gpsAccuracy != null ? e.gpsAccuracy : '',
+        e.details || '',
+        e.timestamp ? new Date(e.timestamp).toLocaleString() : '',
+        ...photoVals
+      ];
+    })
+  ];
+  const photoCols = Array.from({length: maxPhotos}, () => ({wch:14}));
+  const ws = XLSX.utils.aoa_to_sheet(aoa);
+  ws['!cols'] = [{wch:8},{wch:30},{wch:14},{wch:14},{wch:16},{wch:50},{wch:20},...photoCols];
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, ws, 'USFS Entries');
+  zip.file('USFS_Report_' + datestamp() + '.xlsx', XLSX.write(wb, {bookType:'xlsx',type:'array'}));
+  zip.file('USFS_Data_'   + datestamp() + '.csv', csv);
+
+  try {
+    const blob = await zip.generateAsync({ type: 'blob' });
+    const url  = URL.createObjectURL(blob);
+    const a    = document.createElement('a');
+    a.href     = url;
+    a.download = 'USFS_Export_' + datestamp() + '.zip';
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+    const endRef = fmtRef(parsed.prefix, counter - 1, parsed.digits);
+    showToast(`Exported ${allEntries.length} entries, ${photoCount} photos (${pStr}\u2013${endRef})`);
+
+    // Clean up localStorage fallback copies
+    try {
+      const fallbackKeys = [];
+      for (let i = 0; i < localStorage.length; i++) {
+        const k = localStorage.key(i);
+        if (k && k.startsWith('photo_full_')) fallbackKeys.push(k);
+      }
+      fallbackKeys.forEach(k => localStorage.removeItem(k));
+    } catch(e) {}
+  } catch(e) {
+    console.error('Export error:', e);
+    showToast('Export error \u2014 try again', true);
+  }
+}
+
+// ============================================================================
+// BACKUP / IMPORT
+// ============================================================================
+function saveBackup() {
+  let all = JSON.parse(JSON.stringify(savedEntries));
+  const loc = document.getElementById('siteName').value.trim();
+  const det = document.getElementById('entryDetails').value.trim();
+  if (loc || det) {
+    all.push({
+      id: currentEntryId,
+      siteName: loc,
+      location: loc, details: det,
+      latitude:  currentGPS ? currentGPS.latitude  : null,
+      longitude: currentGPS ? currentGPS.longitude : null,
+      gpsAccuracy: currentGPS ? currentGPS.accuracy : null,
+      timestamp: new Date().toISOString(),
+      photos: {}
+    });
+  }
+  if (all.length === 0) { showToast('Nothing to back up', true); return; }
+
+  const clean = all.map(({ photos, ...rest }) => rest);
+  const blob  = new Blob([JSON.stringify({ version:1, exported: new Date().toISOString(), entries: clean }, null, 2)], { type:'application/json' });
+  const url   = URL.createObjectURL(blob);
+  const a     = document.createElement('a');
+  a.href = url; a.download = `USFS_Backup_${datestamp()}.json`;
+  document.body.appendChild(a); a.click();
+  document.body.removeChild(a); URL.revokeObjectURL(url);
+  showToast(`Backup saved \u2014 ${clean.length} entries`);
+}
+
+function importBackup() {
+  document.getElementById('backupFileInput').value = '';
+  document.getElementById('backupFileInput').click();
+}
+
+function handleBackupFile(event) {
+  const file = event.target.files[0];
+  if (!file) return;
+  const reader = new FileReader();
+  reader.onload = e => {
+    try {
+      const parsed  = JSON.parse(e.target.result);
+      let entries   = Array.isArray(parsed) ? parsed : (parsed.entries || null);
+      if (!entries || !Array.isArray(entries)) throw new Error('Unrecognised format');
+      entries       = entries.filter(en => en && (en.location || en.details));
+
+      if (entries.length === 0) { showToast('No valid entries found', true); return; }
+
+      const action = confirm(
+        `Found ${entries.length} entries in backup.\n\n` +
+        `OK = MERGE with existing ${savedEntries.length} entries\n` +
+        `Cancel = REPLACE all current entries`
+      );
+
+      if (!action) {
+        savedEntries = entries.map(normaliseEntry);
+      } else {
+        const existing = new Set(savedEntries.map(e => e.location + '|' + e.timestamp));
+        let added = 0;
+        entries.forEach(en => {
+          const n  = normaliseEntry(en);
+          const key = n.location + '|' + n.timestamp;
+          if (!existing.has(key)) { savedEntries.push(n); existing.add(key); added++; }
+        });
+        showToast(`Merged: ${added} new, ${entries.length - added} skipped`);
+      }
+
+      try { localStorage.setItem(LS_SAVED, JSON.stringify(savedEntries)); } catch(e) {}
+      renderSavedPanel();
+      updateHeaderBadge();
+      if (!action) showToast(`Loaded ${entries.length} entries`);
+    } catch(err) {
+      showToast('Import failed: ' + err.message, true);
+    }
+  };
+  reader.readAsText(file);
+}
+
+function normaliseEntry(e) {
+  return {
+    id:        e.id        || genId(),
+    siteName:  e.siteName  || e.location || '',
+    location:  e.location  || e.siteName || '',
+    details:   e.details   || '',
+    latitude:  e.latitude  != null ? e.latitude  : null,
+    longitude: e.longitude != null ? e.longitude : null,
+    gpsAccuracy: e.gpsAccuracy != null ? e.gpsAccuracy : null,
+    timestamp: e.timestamp || '',
+    photos:    {}
+  };
+}
+
+// ============================================================================
+// GEOLOCATION
+// ============================================================================
+function captureGPS(silent) {
+  return new Promise((resolve, reject) => {
+    if (!navigator.geolocation) {
+      if (!silent) showToast('Geolocation not available on this device', true);
+      reject(new Error('no geolocation'));
+      return;
+    }
+    navigator.geolocation.getCurrentPosition(
+      pos => {
+        const lat = pos.coords.latitude;
+        const lon = pos.coords.longitude;
+        const acc = Math.round(pos.coords.accuracy);
+        currentGPS = { latitude: lat, longitude: lon, accuracy: acc };
+        updateGPSDisplay();
+        autoSaveCurrent();
+        resolve(currentGPS);
+      },
+      err => {
+        if (!silent) {
+          const msgs = {
+            1: 'Location permission denied \u2014 check Settings > Privacy > Location',
+            2: 'Location unavailable \u2014 try again outdoors or near a window',
+            3: 'Location request timed out \u2014 try again'
+          };
+          const msg = msgs[err.code] || 'Location error';
+          const status = document.getElementById('gpsStatus');
+          status.textContent = msg;
+          status.style.color = 'var(--danger)';
+          status.style.display = 'block';
+          showToast(msg, true);
+        }
+        reject(err);
+      },
+      { enableHighAccuracy: true, timeout: 15000, maximumAge: 0 }
+    );
+  });
+}
+
+function updateGPSDisplay() {
+  const display = document.getElementById('gpsDisplay');
+  const status  = document.getElementById('gpsStatus');
+  const clearBtn = document.getElementById('gpsClearBtn');
+  if (currentGPS) {
+    const lat = currentGPS.latitude.toFixed(6);
+    const lonDir = currentGPS.longitude < 0 ? 'W' : 'E';
+    display.value = `${lat}\u00B0N, ${Math.abs(currentGPS.longitude).toFixed(6)}\u00B0${lonDir}`;
+    display.style.color = 'var(--text)';
+    status.textContent = `\u00B1${currentGPS.accuracy}m accuracy`;
+    status.style.color = currentGPS.accuracy <= 20 ? 'var(--success)' : currentGPS.accuracy <= 100 ? 'var(--warning)' : 'var(--danger)';
+    status.style.display = 'block';
+    clearBtn.style.display = 'block';
+  } else {
+    display.value = '';
+    display.style.color = 'var(--text-dim)';
+    status.style.display = 'none';
+    clearBtn.style.display = 'none';
+  }
+}
+
+function getGPS() {
+  const btn   = document.getElementById('gpsBtn');
+  const label = document.getElementById('gpsBtnLabel');
+  const icon  = document.getElementById('gpsBtnIcon');
+
+  btn.disabled = true;
+  label.textContent = 'Locating\u2026';
+  icon.innerHTML = '<circle cx="12" cy="12" r="4" fill="none" stroke="currentColor" stroke-width="2" stroke-dasharray="6 4"><animateTransform attributeName="transform" type="rotate" from="0 12 12" to="360 12 12" dur="0.8s" repeatCount="indefinite"/></circle>';
+
+  captureGPS(false)
+    .then(gps => showToast(`GPS captured (\u00B1${gps.accuracy}m)`))
+    .catch(() => {})
+    .finally(() => {
+      btn.disabled = false;
+      label.textContent = 'GPS';
+      icon.innerHTML = '<circle cx="12" cy="12" r="3"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3"/><path d="M12 7a5 5 0 1 0 0 10A5 5 0 0 0 12 7z"/>';
+    });
+}
+
+function clearGPS() {
+  currentGPS = null;
+  updateGPSDisplay();
+  autoSaveCurrent();
+}
+
+// ============================================================================
+// PERSISTENCE
+// ============================================================================
+function autoSaveCurrent() {
+  try {
+    localStorage.setItem(LS_CURRENT, JSON.stringify({
+      siteName:      document.getElementById('siteName').value,
+      entryDetails:  document.getElementById('entryDetails').value,
+      currentPhotos, currentEntryId, extraPhotoSlots, currentGPS
+    }));
+    checkStorage();
+  } catch(e) { showToast('Storage issue \u2014 export soon', true); }
+}
+
+function saveAll() {
+  try { localStorage.setItem(LS_SAVED, JSON.stringify(savedEntries)); checkStorage(); }
+  catch(e) { showToast('Storage error \u2014 export soon!', true); }
+}
+
+function loadAll() {
+  try {
+    const s = localStorage.getItem(LS_SAVED);
+    if (s) savedEntries = JSON.parse(s);
+  } catch(e) {}
+
+  try {
+    const c = localStorage.getItem(LS_CURRENT);
+    if (!c) return;
+    const state = JSON.parse(c);
+
+    document.getElementById('siteName').value      = state.siteName      || '';
+    document.getElementById('entryDetails').value   = state.entryDetails  || '';
+
+    currentPhotos  = state.currentPhotos  || {};
+    currentEntryId = state.currentEntryId || genId();
+    currentGPS     = state.currentGPS    || null;
+    updateGPSDisplay();
+
+    // Restore any extra photo slots
+    extraPhotoSlots = [];
+    const extraSlotsContainer = document.getElementById('extraSlotsContainer');
+    if (extraSlotsContainer) extraSlotsContainer.innerHTML = '';
+    const savedExtra = state.extraPhotoSlots || [];
+    savedExtra.forEach(slotId => {
+      extraPhotoSlots.push(slotId);
+      const num = 2 + extraPhotoSlots.length;
+      const wrapper = document.createElement('div');
+      wrapper.className = 'photo-grid photo-slot-extra';
+      wrapper.id = 'wrapper_' + slotId;
+      wrapper.style.marginTop = '12px';
+      const ph = currentPhotos[slotId] && currentPhotos[slotId].thumbnail;
+      wrapper.innerHTML = `
+        <div class="photo-slot" style="grid-column:1/span 1;">
+          <label>Photo ${num}</label>
+          <div class="photo-capture ${ph ? 'has-photo' : ''}" onclick="takePhoto('${slotId}')" id="photo_${slotId}">
+            ${ph
+              ? `<img src="${ph}"><span class="retake-badge">Retake</span><span class="saved-badge">\u2713</span>`
+              : `<span class="placeholder"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="5" width="18" height="14" rx="2"/><circle cx="12" cy="12" r="3"/><path d="M9 2h6l1 3H8l1-3z"/></svg>Tap to capture</span>`}
+          </div>
+          <input type="file" accept="image/*" capture="environment" id="file_${slotId}" onchange="handlePhoto(this,'${slotId}')">
+        </div>
+        <div style="display:flex;align-items:flex-end;padding-bottom:4px;">
+          <button class="btn btn-outline btn-sm" onclick="removePhotoSlot('${slotId}')"
+            style="color:var(--danger);border-color:var(--danger);padding:6px 12px;">\u2715 Remove</button>
+        </div>`;
+      if (extraSlotsContainer) extraSlotsContainer.appendChild(wrapper);
+    });
+
+    const PH = `<span class="placeholder">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+        <rect x="3" y="5" width="18" height="14" rx="2"/>
+        <circle cx="12" cy="12" r="3"/>
+        <path d="M9 2h6l1 3H8l1-3z"/>
+      </svg>Tap to capture</span>`;
+
+    PHOTO_SLOTS.forEach(slot => {
+      if (currentPhotos[slot] && currentPhotos[slot].thumbnail) {
+        const el = document.getElementById('photo_' + slot);
+        if (el) {
+          el.classList.add('has-photo');
+          el.innerHTML = `<img src="${currentPhotos[slot].thumbnail}"><span class="retake-badge">Retake</span><span class="saved-badge">\u2713</span>`;
+        }
+      }
+    });
+  } catch(e) {}
+}
+
+function checkStorage() {
+  try {
+    let bytes = 0;
+    for (let i = 0; i < localStorage.length; i++) {
+      const k = localStorage.key(i);
+      if (k && (k.startsWith('usfs_') || k.startsWith('photo_full_')))
+        bytes += localStorage.getItem(k).length * 2;
+    }
+    const pct = Math.round(bytes / (5 * 1024 * 1024) * 100);
+    const ind = document.getElementById('storageIndicator');
+    const msg = document.getElementById('storageMsg');
+
+    if (pct >= 85) {
+      ind.style.display = 'block';
+      if (pct >= 95) {
+        msg.textContent  = '\u26A0 Entry cache full \u2014 export & restart to continue';
+        ind.style.color  = '#d94a4a';
+        showToast('\u26A0 Export now \u2014 entry cache is full. Your photos are safe.', true);
+      } else {
+        msg.textContent  = 'Export soon to free up entry cache';
+        ind.style.color  = '#d9a84a';
+      }
+    } else {
+      ind.style.display = 'none';
+    }
+  } catch(e) {}
+}
+
+// ============================================================================
+// UTILITIES
+// ============================================================================
+function quote(val) {
+  if (!val) return '';
+  val = String(val);
+  if (val.includes(',') || val.includes('"') || val.includes('\n'))
+    return `"${val.replace(/"/g,'""')}"`;
+  return val;
+}
+
+function datestamp() {
+  const d = new Date();
+  return `${String(d.getMonth()+1).padStart(2,'0')}${String(d.getDate()).padStart(2,'0')}${String(d.getFullYear()).slice(2)}`;
+}
+
+function showToast(msg, isWarn = false) {
+  const t = document.getElementById('toast');
+  t.textContent = msg;
+  t.className   = 'toast show' + (isWarn ? ' toast-warn' : '');
+  setTimeout(() => { t.className = 'toast'; }, 2500);
+}
+
+// ============================================================================
+// OVERFLOW MENU
+// ============================================================================
+function toggleOverflow() {
+  document.getElementById('overflowDropdown').classList.toggle('open');
+}
+
+function closeOverflow() {
+  document.getElementById('overflowDropdown').classList.remove('open');
+}
+
+document.addEventListener('click', e => {
+  const wrapper = document.getElementById('overflowWrapper');
+  if (wrapper && !wrapper.contains(e.target)) closeOverflow();
+});
+
+// ============================================================================
+// START
+// ============================================================================
+init();
+</script>
+</body>
+</html>
