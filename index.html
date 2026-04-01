@@ -575,6 +575,22 @@ if ('serviceWorker' in navigator) {
     <div class="site-list-hint" id="siteListHint"></div>
   </div>
 
+  <!-- -- PROTOCOL AREA DROPDOWN -- -->
+  <div class="site-section">
+    <div class="site-section-row">
+      <label>Protocol Area</label>
+      <input type="text" id="protocolArea" list="protocolListDL"
+        placeholder="Select a protocol area"
+        oninput="autoSaveCurrent()" autocomplete="off">
+      <datalist id="protocolListDL"></datalist>
+      <button class="site-import-btn" onclick="importProtocolList()" title="Load protocol list from .txt file">
+        &#128196; Protocols
+      </button>
+      <input type="file" id="protocolListFile" accept=".txt" style="display:none" onchange="handleProtocolListFile(event)">
+    </div>
+    <div class="site-list-hint" id="protocolListHint"></div>
+  </div>
+
   <!-- -- ENTRY FORM -- -->
   <div class="entry-section">
     <h2 id="entryFormTitle">&#128269; New Entry</h2>
@@ -739,6 +755,7 @@ const LS_SAVED   = 'usfs_saved';
 const LS_CURRENT = 'usfs_current';
 const LS_PHOTOS  = 'usfs_photo_settings';
 const LS_SITES   = 'usfs_site_list';
+const LS_PROTOCOLS = 'usfs_protocol_list';
 const IDB_NAME   = 'usfs_photos_v1';
 
 // ============================================================================
@@ -750,6 +767,7 @@ let currentEntryId = null;
 let savedPanelOpen = false;
 let extraPhotoSlots = [];
 let siteList       = [];
+let protocolList   = [];
 let currentGPS     = null;
 let editingIndex   = null;
 
@@ -780,6 +798,13 @@ function init() {
     if (sl) siteList = JSON.parse(sl);
   } catch(e) {}
   populateSiteDatalist();
+
+  // Load saved protocol list
+  try {
+    const pl = localStorage.getItem(LS_PROTOCOLS);
+    if (pl) protocolList = JSON.parse(pl);
+  } catch(e) {}
+  populateProtocolDatalist();
 
   // Auto-fill location from today's most recent saved entry
   if (!document.getElementById('siteName').value.trim()) {
@@ -834,6 +859,47 @@ function handleSiteListFile(event) {
     try { localStorage.setItem(LS_SITES, JSON.stringify(siteList)); } catch(e) {}
     populateSiteDatalist();
     showToast(`\u2714 Loaded ${lines.length} location${lines.length !== 1 ? 's' : ''}`);
+  };
+  reader.readAsText(file);
+}
+
+// ============================================================================
+// PROTOCOL AREA LIST
+// ============================================================================
+function populateProtocolDatalist() {
+  const dl   = document.getElementById('protocolListDL');
+  const hint = document.getElementById('protocolListHint');
+  if (!dl) return;
+  dl.innerHTML = protocolList.map(p => `<option value="${p.replace(/"/g,'&quot;')}">`).join('');
+  if (protocolList.length > 0) {
+    hint.textContent = `${protocolList.length} protocol${protocolList.length !== 1 ? 's' : ''} loaded — tap the field to see the list`;
+    hint.classList.add('visible');
+  } else {
+    hint.classList.remove('visible');
+  }
+}
+
+function importProtocolList() {
+  document.getElementById('protocolListFile').value = '';
+  document.getElementById('protocolListFile').click();
+}
+
+function handleProtocolListFile(event) {
+  const file = event.target.files[0];
+  if (!file) return;
+  const reader = new FileReader();
+  reader.onload = e => {
+    const lines = e.target.result
+      .split(/\r?\n/)
+      .map(l => l.trim())
+      .filter(l => l.length > 0 && !l.startsWith('#'));
+
+    if (lines.length === 0) { showToast('No protocols found in file', true); return; }
+
+    protocolList = lines;
+    try { localStorage.setItem(LS_PROTOCOLS, JSON.stringify(protocolList)); } catch(e) {}
+    populateProtocolDatalist();
+    showToast(`\u2714 Loaded ${lines.length} protocol${lines.length !== 1 ? 's' : ''}`);
   };
   reader.readAsText(file);
 }
@@ -920,6 +986,7 @@ function saveEntryAndNew() {
     id:        currentEntryId,
     siteName:  location,
     location:  location,
+    protocolArea: document.getElementById('protocolArea').value.trim(),
     details:   details,
     latitude:  currentGPS ? currentGPS.latitude  : null,
     longitude: currentGPS ? currentGPS.longitude : null,
@@ -1007,6 +1074,7 @@ function renderSavedPanel() {
           : `<div class="saved-item-thumb-empty">&#128247;</div>`}
         <div class="saved-item-info">
           <div class="saved-item-name">${e.location || '(No location)'}</div>
+          ${e.protocolArea ? `<div class="saved-item-detail" style="font-size:11px;color:var(--text-dim);">${e.protocolArea}</div>` : ''}
           ${e.latitude != null ? `<div style="font-size:10px;color:var(--text-dim);">${e.latitude.toFixed(6)}\u00B0N, ${Math.abs(e.longitude).toFixed(6)}\u00B0${e.longitude < 0 ? 'W' : 'E'}</div>` : ''}
           <div class="saved-item-detail">
             ${photoCount} photo${photoCount !== 1 ? 's' : ''}
@@ -1064,6 +1132,7 @@ function editEntry(index) {
 
   // Load entry data into form
   document.getElementById('siteName').value      = entry.location || '';
+  document.getElementById('protocolArea').value  = entry.protocolArea || '';
   document.getElementById('entryDetails').value  = entry.details  || '';
 
   // Restore GPS
@@ -1155,6 +1224,7 @@ function saveEdit() {
     id:          currentEntryId,
     siteName:    location,
     location:    location,
+    protocolArea: document.getElementById('protocolArea').value.trim(),
     details:     details,
     latitude:    currentGPS ? currentGPS.latitude  : null,
     longitude:   currentGPS ? currentGPS.longitude : null,
@@ -1491,12 +1561,14 @@ async function runExport() {
 
   let allEntries = JSON.parse(JSON.stringify(savedEntries));
   const loc  = document.getElementById('siteName').value.trim();
+  const prot = document.getElementById('protocolArea').value.trim();
   const det  = document.getElementById('entryDetails').value.trim();
   if (loc || det || Object.keys(currentPhotos).length > 0) {
     allEntries.push({
       id:        currentEntryId,
       siteName:  loc,
       location:  loc,
+      protocolArea: prot,
       details:   det,
       latitude:  currentGPS ? currentGPS.latitude  : null,
       longitude: currentGPS ? currentGPS.longitude : null,
@@ -1565,7 +1637,7 @@ async function runExport() {
   const fmtCoord = v => v != null ? Number(v).toFixed(6) : '';
   const fmtAcc   = v => v != null ? String(v) : '';
   const photoHeaders = Array.from({length: maxPhotos}, (_, i) => `Photo ${i+1}`);
-  let csv = ['Entry #','Location','Latitude','Longitude','GPS Accuracy (m)','Description','Timestamp',...photoHeaders].join(',') + '\n';
+  let csv = ['Entry #','Location','Latitude','Longitude','GPS Accuracy (m)','Protocol Area','Description','Timestamp',...photoHeaders].join(',') + '\n';
   allEntries.forEach((e, i) => {
     const m = entryMaps[i];
     const sortedSlots = Object.keys(m).sort((a,b) => {
@@ -1576,6 +1648,7 @@ async function runExport() {
     csv += [
       i + 1, quote(e.location),
       quote(fmtCoord(e.latitude)), quote(fmtCoord(e.longitude)), quote(fmtAcc(e.gpsAccuracy)),
+      quote(e.protocolArea || ''),
       quote(e.details),
       quote(e.timestamp ? new Date(e.timestamp).toLocaleString() : ''),
       ...photoVals
@@ -1585,7 +1658,7 @@ async function runExport() {
   // XLSX
   const xlsxPhotoCols = Array.from({length: maxPhotos}, (_, i) => `Photo ${i+1}`);
   const aoa = [
-    ['Entry #', 'Location', 'Latitude', 'Longitude', 'GPS Accuracy (m)', 'Description', 'Timestamp', ...xlsxPhotoCols],
+    ['Entry #', 'Location', 'Latitude', 'Longitude', 'GPS Accuracy (m)', 'Protocol Area', 'Description', 'Timestamp', ...xlsxPhotoCols],
     ...allEntries.map((e, i) => {
       const m = entryMaps[i];
       const sortedSlots = Object.keys(m).sort((a,b) => {
@@ -1596,6 +1669,7 @@ async function runExport() {
       return [
         i + 1, e.location || '',
         e.latitude != null ? e.latitude : '', e.longitude != null ? e.longitude : '', e.gpsAccuracy != null ? e.gpsAccuracy : '',
+        e.protocolArea || '',
         e.details || '',
         e.timestamp ? new Date(e.timestamp).toLocaleString() : '',
         ...photoVals
@@ -1604,7 +1678,7 @@ async function runExport() {
   ];
   const photoCols = Array.from({length: maxPhotos}, () => ({wch:14}));
   const ws = XLSX.utils.aoa_to_sheet(aoa);
-  ws['!cols'] = [{wch:8},{wch:30},{wch:14},{wch:14},{wch:16},{wch:50},{wch:20},...photoCols];
+  ws['!cols'] = [{wch:8},{wch:30},{wch:14},{wch:14},{wch:16},{wch:20},{wch:50},{wch:20},...photoCols];
   const wb = XLSX.utils.book_new();
   XLSX.utils.book_append_sheet(wb, ws, 'USFS Entries');
   zip.file('USFS_Report_' + datestamp() + '.xlsx', XLSX.write(wb, {bookType:'xlsx',type:'array'}));
@@ -1644,12 +1718,13 @@ async function runExport() {
 function saveBackup() {
   let all = JSON.parse(JSON.stringify(savedEntries));
   const loc = document.getElementById('siteName').value.trim();
+  const prot = document.getElementById('protocolArea').value.trim();
   const det = document.getElementById('entryDetails').value.trim();
   if (loc || det) {
     all.push({
       id: currentEntryId,
       siteName: loc,
-      location: loc, details: det,
+      location: loc, protocolArea: prot, details: det,
       latitude:  currentGPS ? currentGPS.latitude  : null,
       longitude: currentGPS ? currentGPS.longitude : null,
       gpsAccuracy: currentGPS ? currentGPS.accuracy : null,
@@ -1722,6 +1797,7 @@ function normaliseEntry(e) {
     id:        e.id        || genId(),
     siteName:  e.siteName  || e.location || '',
     location:  e.location  || e.siteName || '',
+    protocolArea: e.protocolArea || '',
     details:   e.details   || '',
     latitude:  e.latitude  != null ? e.latitude  : null,
     longitude: e.longitude != null ? e.longitude : null,
@@ -1825,6 +1901,7 @@ function autoSaveCurrent() {
   try {
     localStorage.setItem(LS_CURRENT, JSON.stringify({
       siteName:      document.getElementById('siteName').value,
+      protocolArea:  document.getElementById('protocolArea').value,
       entryDetails:  document.getElementById('entryDetails').value,
       currentPhotos, currentEntryId, extraPhotoSlots, currentGPS
     }));
@@ -1849,6 +1926,7 @@ function loadAll() {
     const state = JSON.parse(c);
 
     document.getElementById('siteName').value      = state.siteName      || '';
+    document.getElementById('protocolArea').value  = state.protocolArea  || '';
     document.getElementById('entryDetails').value   = state.entryDetails  || '';
 
     currentPhotos  = state.currentPhotos  || {};
