@@ -1535,8 +1535,23 @@ function updateRefPreview() {
   }
 }
 
-function sanitizeForFilename(str) {
-  return (str || 'NoLocation').replace(/[^a-zA-Z0-9_\- ]/g, '').replace(/\s+/g, '_').substring(0, 40) || 'NoLocation';
+function sanitizeSegment(str) {
+  return (str || '').replace(/[^a-zA-Z0-9_\- ]/g, '').replace(/\s+/g, '_').replace(/_+/g, '_').replace(/^_|_$/g, '');
+}
+
+function extractDistrictAndLocation(str) {
+  // Split on common hierarchy delimiters: ->, >, –, —, |, /
+  const parts = (str || '').split(/\s*(?:->|→|>|–|—|\||\/)\s*/).map(s => s.trim()).filter(Boolean);
+  if (parts.length >= 2) {
+    // Last two segments = District + Location
+    const district = sanitizeSegment(parts[parts.length - 2]);
+    const location = sanitizeSegment(parts[parts.length - 1]);
+    return [district, location].filter(Boolean).join('_');
+  }
+  if (parts.length === 1) {
+    return sanitizeSegment(parts[0]);
+  }
+  return 'NoLocation';
 }
 
 function buildPhotoName(entry, seqNum) {
@@ -1545,7 +1560,7 @@ function buildPhotoName(entry, seqNum) {
   const dd = String(d.getDate()).padStart(2, '0');
   const yy = String(d.getFullYear()).slice(-2);
   const datePart = mm + dd + yy;
-  const locPart = sanitizeForFilename(entry.location || entry.siteName);
+  const locPart = extractDistrictAndLocation(entry.location || entry.siteName) || 'NoLocation';
   const numPart = String(seqNum).padStart(4, '0');
   return `${datePart}_${locPart}_${numPart}`;
 }
