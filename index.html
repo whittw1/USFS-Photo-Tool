@@ -596,6 +596,11 @@ if ('serviceWorker' in navigator) {
     <h2 id="entryFormTitle">&#128269; New Entry</h2>
 
     <div class="form-group">
+      <label>Team Guide Citation</label>
+      <input type="text" id="teamGuideCitation" placeholder="e.g. TG-2024-3.2.1" oninput="autoSaveCurrent()">
+    </div>
+
+    <div class="form-group">
       <label>Description</label>
       <textarea id="entryDetails" placeholder="Describe what you observed..." oninput="autoSaveCurrent()"></textarea>
     </div>
@@ -979,6 +984,7 @@ function saveEntryAndNew() {
     siteName:  location,
     location:  location,
     protocolArea: document.getElementById('protocolArea').value.trim(),
+    teamGuideCitation: document.getElementById('teamGuideCitation').value.trim(),
     details:   details,
     latitude:  currentGPS ? currentGPS.latitude  : null,
     longitude: currentGPS ? currentGPS.longitude : null,
@@ -1014,6 +1020,7 @@ function clearEntryForm(confirmFirst = true) {
 
   // Keep the location dropdown value (user typically stays at same location)
   document.getElementById('entryDetails').value  = '';
+  document.getElementById('teamGuideCitation').value = '';
   updateGPSDisplay();
 
   const PH = `<span class="placeholder">
@@ -1067,6 +1074,7 @@ function renderSavedPanel() {
         <div class="saved-item-info">
           <div class="saved-item-name">${e.location || '(No location)'}</div>
           ${e.protocolArea ? `<div class="saved-item-detail" style="font-size:11px;color:var(--text-dim);">${e.protocolArea}</div>` : ''}
+          ${e.teamGuideCitation ? `<div class="saved-item-detail" style="font-size:11px;color:var(--text-dim);font-style:italic;">TG: ${e.teamGuideCitation}</div>` : ''}
           ${e.latitude != null ? `<div style="font-size:10px;color:var(--text-dim);">${e.latitude.toFixed(6)}\u00B0N, ${Math.abs(e.longitude).toFixed(6)}\u00B0${e.longitude < 0 ? 'W' : 'E'}</div>` : ''}
           <div class="saved-item-detail">
             ${photoCount} photo${photoCount !== 1 ? 's' : ''}
@@ -1125,6 +1133,7 @@ function editEntry(index) {
   // Load entry data into form
   document.getElementById('siteName').value      = entry.location || '';
   document.getElementById('protocolArea').value  = entry.protocolArea || '';
+  document.getElementById('teamGuideCitation').value = entry.teamGuideCitation || '';
   document.getElementById('entryDetails').value  = entry.details  || '';
 
   // Restore GPS
@@ -1217,6 +1226,7 @@ function saveEdit() {
     siteName:    location,
     location:    location,
     protocolArea: document.getElementById('protocolArea').value.trim(),
+    teamGuideCitation: document.getElementById('teamGuideCitation').value.trim(),
     details:     details,
     latitude:    currentGPS ? currentGPS.latitude  : null,
     longitude:   currentGPS ? currentGPS.longitude : null,
@@ -1571,6 +1581,7 @@ async function runExport() {
   let allEntries = JSON.parse(JSON.stringify(savedEntries));
   const loc  = document.getElementById('siteName').value.trim();
   const prot = document.getElementById('protocolArea').value.trim();
+  const tgc  = document.getElementById('teamGuideCitation').value.trim();
   const det  = document.getElementById('entryDetails').value.trim();
   if (loc || det || Object.keys(currentPhotos).length > 0) {
     allEntries.push({
@@ -1578,6 +1589,7 @@ async function runExport() {
       siteName:  loc,
       location:  loc,
       protocolArea: prot,
+      teamGuideCitation: tgc,
       details:   det,
       latitude:  currentGPS ? currentGPS.latitude  : null,
       longitude: currentGPS ? currentGPS.longitude : null,
@@ -1645,7 +1657,7 @@ async function runExport() {
   const fmtCoord = v => v != null ? Number(v).toFixed(6) : '';
   const fmtAcc   = v => v != null ? String(v) : '';
   const photoHeaders = Array.from({length: maxPhotos}, (_, i) => `Photo ${i+1}`);
-  let csv = ['Entry #','Location','Latitude','Longitude','GPS Accuracy (m)','Protocol Area','Description','Timestamp',...photoHeaders].join(',') + '\n';
+  let csv = ['Entry #','Location','Latitude','Longitude','GPS Accuracy (m)','Protocol Area','Team Guide Citation','Description','Timestamp',...photoHeaders].join(',') + '\n';
   allEntries.forEach((e, i) => {
     const m = entryMaps[i];
     const sortedSlots = Object.keys(m).sort((a,b) => {
@@ -1657,6 +1669,7 @@ async function runExport() {
       i + 1, quote(e.location),
       quote(fmtCoord(e.latitude)), quote(fmtCoord(e.longitude)), quote(fmtAcc(e.gpsAccuracy)),
       quote(e.protocolArea || ''),
+      quote(e.teamGuideCitation || ''),
       quote(e.details),
       quote(e.timestamp ? new Date(e.timestamp).toLocaleString() : ''),
       ...photoVals
@@ -1666,7 +1679,7 @@ async function runExport() {
   // XLSX
   const xlsxPhotoCols = Array.from({length: maxPhotos}, (_, i) => `Photo ${i+1}`);
   const aoa = [
-    ['Entry #', 'Location', 'Latitude', 'Longitude', 'GPS Accuracy (m)', 'Protocol Area', 'Description', 'Timestamp', ...xlsxPhotoCols],
+    ['Entry #', 'Location', 'Latitude', 'Longitude', 'GPS Accuracy (m)', 'Protocol Area', 'Team Guide Citation', 'Description', 'Timestamp', ...xlsxPhotoCols],
     ...allEntries.map((e, i) => {
       const m = entryMaps[i];
       const sortedSlots = Object.keys(m).sort((a,b) => {
@@ -1678,6 +1691,7 @@ async function runExport() {
         i + 1, e.location || '',
         e.latitude != null ? e.latitude : '', e.longitude != null ? e.longitude : '', e.gpsAccuracy != null ? e.gpsAccuracy : '',
         e.protocolArea || '',
+        e.teamGuideCitation || '',
         e.details || '',
         e.timestamp ? new Date(e.timestamp).toLocaleString() : '',
         ...photoVals
@@ -1727,12 +1741,13 @@ function saveBackup() {
   let all = JSON.parse(JSON.stringify(savedEntries));
   const loc = document.getElementById('siteName').value.trim();
   const prot = document.getElementById('protocolArea').value.trim();
+  const tgc  = document.getElementById('teamGuideCitation').value.trim();
   const det = document.getElementById('entryDetails').value.trim();
   if (loc || det) {
     all.push({
       id: currentEntryId,
       siteName: loc,
-      location: loc, protocolArea: prot, details: det,
+      location: loc, protocolArea: prot, teamGuideCitation: tgc, details: det,
       latitude:  currentGPS ? currentGPS.latitude  : null,
       longitude: currentGPS ? currentGPS.longitude : null,
       gpsAccuracy: currentGPS ? currentGPS.accuracy : null,
@@ -1806,6 +1821,7 @@ function normaliseEntry(e) {
     siteName:  e.siteName  || e.location || '',
     location:  e.location  || e.siteName || '',
     protocolArea: e.protocolArea || '',
+    teamGuideCitation: e.teamGuideCitation || '',
     details:   e.details   || '',
     latitude:  e.latitude  != null ? e.latitude  : null,
     longitude: e.longitude != null ? e.longitude : null,
@@ -1910,6 +1926,7 @@ function autoSaveCurrent() {
     localStorage.setItem(LS_CURRENT, JSON.stringify({
       siteName:      document.getElementById('siteName').value,
       protocolArea:  document.getElementById('protocolArea').value,
+      teamGuideCitation: document.getElementById('teamGuideCitation').value,
       entryDetails:  document.getElementById('entryDetails').value,
       currentPhotos, currentEntryId, extraPhotoSlots, currentGPS
     }));
@@ -1935,6 +1952,7 @@ function loadAll() {
 
     document.getElementById('siteName').value      = state.siteName      || '';
     document.getElementById('protocolArea').value  = state.protocolArea  || '';
+    document.getElementById('teamGuideCitation').value = state.teamGuideCitation || '';
     document.getElementById('entryDetails').value   = state.entryDetails  || '';
 
     currentPhotos  = state.currentPhotos  || {};
