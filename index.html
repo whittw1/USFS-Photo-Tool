@@ -679,14 +679,8 @@ if ('serviceWorker' in navigator) {
 <div class="dialog-overlay" id="exportOverlay" style="display:none;" onclick="if(event.target===this)closeExportDialog()">
   <div class="dialog">
     <h3>&#128230; Export</h3>
-    <p>Photos will be renamed with sequential reference numbers.<br>Enter the <strong>starting</strong> number for this session.</p>
-    <div style="display:flex;flex-direction:column;gap:5px;">
-      <label style="font-size:12px;font-weight:600;color:var(--text-label);text-transform:uppercase;letter-spacing:0.5px;">Starting Reference Number</label>
-      <input type="text" id="refStart" value="P0001" placeholder="e.g. P0001"
-        style="padding:12px 14px;background:var(--input-bg);border:1.5px solid var(--border);border-radius:8px;color:var(--text);font-size:16px;font-family:monospace;letter-spacing:1px;"
-        onkeydown="if(event.key==='Enter')runExport()">
-      <div id="refPreview" style="font-size:12px;color:var(--text-dim);margin-top:2px;"></div>
-    </div>
+    <p>Photos will be named using the entry date and location.<br>Format: <strong>MMDDYY_Location_0001.jpg</strong></p>
+    <div id="refPreview" style="font-size:12px;color:var(--text-dim);margin-top:4px;"></div>
     <div class="dialog-actions">
       <button class="btn btn-outline btn-sm" onclick="closeExportDialog()">Cancel</button>
       <button class="btn btn-success btn-sm" onclick="runExport()">&#128230; Export ZIP</button>
@@ -817,9 +811,7 @@ function init() {
     }
   }
 
-  // Wire up ref number live preview
-  const inp = document.getElementById('refStart');
-  if (inp) inp.addEventListener('input', updateRefPreview);
+  // No ref input needed — photo names are auto-generated
 }
 
 // ============================================================================
@@ -1521,7 +1513,6 @@ function showExportDialog() {
   if (total === 0) { showToast('Nothing to export yet', true); return; }
   updateRefPreview();
   document.getElementById('exportOverlay').style.display = 'flex';
-  setTimeout(() => document.getElementById('refStart').focus(), 100);
 }
 
 function closeExportDialog() {
@@ -1529,34 +1520,37 @@ function closeExportDialog() {
 }
 
 function updateRefPreview() {
-  const val    = document.getElementById('refStart').value.trim();
-  const parsed = parseRef(val);
-  const el     = document.getElementById('refPreview');
-  if (!parsed) {
-    el.textContent = 'Invalid format \u2014 use e.g. P0001';
-    el.style.color = 'var(--warning)';
-  } else {
-    const n2 = fmtRef(parsed.prefix, parsed.num + 1, parsed.digits);
-    const n3 = fmtRef(parsed.prefix, parsed.num + 2, parsed.digits);
-    el.textContent = `${fmtRef(parsed.prefix, parsed.num, parsed.digits)}, ${n2}, ${n3}\u2026`;
+  const el = document.getElementById('refPreview');
+  // Build a preview from the first entry
+  let allEntries = JSON.parse(JSON.stringify(savedEntries));
+  const loc = document.getElementById('siteName').value.trim();
+  if (loc || Object.keys(currentPhotos).length > 0) {
+    allEntries.push({ location: loc, timestamp: new Date().toISOString() });
+  }
+  if (allEntries.length > 0) {
+    const e = allEntries[0];
+    const sample = buildPhotoName(e, 1);
+    el.textContent = `e.g. ${sample}.jpg`;
     el.style.color = 'var(--text-dim)';
   }
 }
 
-function parseRef(str) {
-  const m = (str||'').trim().match(/^([A-Za-z]*)(\d+)$/);
-  if (!m) return null;
-  return { prefix: m[1].toUpperCase(), num: parseInt(m[2],10), digits: m[2].length };
+function sanitizeForFilename(str) {
+  return (str || 'NoLocation').replace(/[^a-zA-Z0-9_\- ]/g, '').replace(/\s+/g, '_').substring(0, 40) || 'NoLocation';
 }
 
-function fmtRef(prefix, num, digits) {
-  return prefix + String(num).padStart(digits,'0');
+function buildPhotoName(entry, seqNum) {
+  const d = entry.timestamp ? new Date(entry.timestamp) : new Date();
+  const mm = String(d.getMonth() + 1).padStart(2, '0');
+  const dd = String(d.getDate()).padStart(2, '0');
+  const yy = String(d.getFullYear()).slice(-2);
+  const datePart = mm + dd + yy;
+  const locPart = sanitizeForFilename(entry.location || entry.siteName);
+  const numPart = String(seqNum).padStart(4, '0');
+  return `${datePart}_${locPart}_${numPart}`;
 }
 
 async function runExport() {
-  const pStr   = document.getElementById('refStart').value.trim();
-  const parsed = parseRef(pStr);
-  if (!parsed) { showToast('Invalid reference number', true); return; }
   closeExportDialog();
 
   let allEntries = JSON.parse(JSON.stringify(savedEntries));
@@ -1583,8 +1577,7 @@ async function runExport() {
 
   showToast('Building export\u2026');
 
-  let counter = parsed.num;
-  const nextRef = () => fmtRef(parsed.prefix, counter++, parsed.digits);
+  let globalSeq = 1;
 
   const zip         = new JSZip();
   const photosFolder = zip.folder('photos');
@@ -1616,10 +1609,10 @@ async function runExport() {
       if (info && info.dbKey) {
         const pd = await getBytes(info.dbKey, info.fileType || 'image/jpeg');
         if (pd) {
-          const ref = nextRef();
+          const photoName = buildPhotoName(entry, globalSeq++);
           const ext = pd.type.includes('png') ? '.png' : '.jpg';
-          photosFolder.file(ref + ext, pd.bytes);
-          map[slot] = ref + ext;
+          photosFolder.file(photoName + ext, pd.bytes);
+          map[slot] = photoName + ext;
           photoCount++;
         } else {
           map[slot] = null;
