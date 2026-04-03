@@ -705,7 +705,14 @@ if ('serviceWorker' in navigator) {
 <div class="bottom-bar">
   <div>
     <div class="entry-count"><strong id="entryCountNum">0</strong> entries saved</div>
-    <div id="storageIndicator"><span id="storageMsg"></span></div>
+    <div id="storageIndicator" style="margin-top:3px;">
+      <div style="display:flex;align-items:center;gap:6px;">
+        <div id="storageBar" style="flex:1;height:4px;background:var(--border);border-radius:2px;overflow:hidden;max-width:120px;">
+          <div id="storageBarFill" style="height:100%;width:0%;border-radius:2px;transition:width 0.3s,background 0.3s;"></div>
+        </div>
+        <span id="storageMsg" style="font-size:11px;color:var(--text-dim);"></span>
+      </div>
+    </div>
   </div>
   <div style="display:flex;gap:8px;" id="bottomActions">
     <button class="btn btn-warning btn-sm" id="saveBtn" onclick="saveEntryAndNew()">Save &amp; New &#9654;</button>
@@ -825,6 +832,7 @@ function init() {
   renderSavedPanel();
   updateHeaderBadge();
   checkStorage();
+  checkPreviousDayEntries();
 
   // Load saved location list
   try {
@@ -2151,32 +2159,105 @@ function loadAll() {
   } catch(e) {}
 }
 
-function checkStorage() {
+const STORAGE_WARN_MB = 40;
+const STORAGE_LIMIT_MB = 80;
+let lastStorageWarnShown = 0;
+
+async function checkStorage() {
   try {
-    let bytes = 0;
+    // Estimate localStorage usage
+    let lsBytes = 0;
     for (let i = 0; i < localStorage.length; i++) {
       const k = localStorage.key(i);
       if (k && (k.startsWith('usfs_') || k.startsWith('photo_full_')))
-        bytes += localStorage.getItem(k).length * 2;
+        lsBytes += localStorage.getItem(k).length * 2;
     }
-    const pct = Math.round(bytes / (5 * 1024 * 1024) * 100);
-    const ind = document.getElementById('storageIndicator');
+
+    // Estimate IndexedDB photo usage
+    let idbBytes = 0;
+    if (idbAvailable) {
+      try {
+        idbBytes = await estimateIDBSize();
+      } catch(e) {}
+    }
+
+    // Also try navigator.storage.estimate if available
+    let totalUsed = lsBytes + idbBytes;
+    let totalQuota = STORAGE_LIMIT_MB * 1024 * 1024;
+    if (navigator.storage && navigator.storage.estimate) {
+      try {
+        const est = await navigator.storage.estimate();
+        if (est.usage > totalUsed) totalUsed = est.usage;
+        if (est.quota) totalQuota = est.quota;
+      } catch(e) {}
+    }
+
+    const usedMB = totalUsed / (1024 * 1024);
+    const pct = Math.min(100, Math.round(usedMB / STORAGE_LIMIT_MB * 100));
+
+    const bar = document.getElementById('storageBarFill');
     const msg = document.getElementById('storageMsg');
 
-    if (pct >= 85) {
-      ind.style.display = 'block';
-      if (pct >= 95) {
-        msg.textContent  = '\u26A0 Entry cache full \u2014 export & restart to continue';
-        ind.style.color  = '#d94a4a';
-        showToast('\u26A0 Export now \u2014 entry cache is full. Your photos are safe.', true);
-      } else {
-        msg.textContent  = 'Export soon to free up entry cache';
-        ind.style.color  = '#d9a84a';
+    bar.style.width = pct + '%';
+    msg.textContent = usedMB.toFixed(1) + ' MB used';
+
+    if (usedMB >= STORAGE_WARN_MB) {
+      bar.style.background = usedMB >= (STORAGE_LIMIT_MB * 0.9) ? 'var(--danger)' : 'var(--warning)';
+      msg.style.color = usedMB >= (STORAGE_LIMIT_MB * 0.9) ? 'var(--danger)' : 'var(--warning)';
+
+      // Show toast warning, but not more than once every 5 minutes
+      const now = Date.now();
+      if (now - lastStorageWarnShown > 5 * 60 * 1000) {
+        lastStorageWarnShown = now;
+        if (usedMB >= (STORAGE_LIMIT_MB * 0.9)) {
+          showToast('\u26A0 Storage nearly full \u2014 export & clear entries now!', true);
+        } else {
+          showToast('\u26A0 Storage above ' + STORAGE_WARN_MB + ' MB \u2014 consider exporting soon', true);
+        }
       }
     } else {
-      ind.style.display = 'none';
+      bar.style.background = 'var(--success)';
+      msg.style.color = 'var(--text-dim)';
     }
   } catch(e) {}
+}
+
+function estimateIDBSize() {
+  return new Promise((resolve, reject) => {
+    if (!photoDB) { resolve(0); return; }
+    try {
+      const tx = photoDB.transaction('photos', 'readonly');
+      const store = tx.objectStore('photos');
+      let total = 0;
+      const cursor = store.openCursor();
+      cursor.onsuccess = e => {
+        const c = e.target.result;
+        if (c) {
+          const val = c.value;
+          if (val && val.data) total += val.data.byteLength || 0;
+          c.continue();
+        } else {
+          resolve(total);
+        }
+      };
+      cursor.onerror = () => resolve(0);
+    } catch(e) { resolve(0); }
+  });
+}
+
+function checkPreviousDayEntries() {
+  if (savedEntries.length === 0) return;
+  const today = new Date().toDateString();
+  const oldEntries = savedEntries.filter(e => {
+    if (!e.timestamp) return false;
+    return new Date(e.timestamp).toDateString() !== today;
+  });
+  if (oldEntries.length > 0) {
+    const days = [...new Set(oldEntries.map(e => new Date(e.timestamp).toLocaleDateString()))];
+    setTimeout(() => {
+      showToast(`\u{1F4CB} You have ${oldEntries.length} unsaved entr${oldEntries.length === 1 ? 'y' : 'ies'} from ${days.length === 1 ? days[0] : days.length + ' previous days'} \u2014 consider exporting`, true);
+    }, 1500);
+  }
 }
 
 // ============================================================================
