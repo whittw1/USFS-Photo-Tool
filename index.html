@@ -594,16 +594,29 @@ if ('serviceWorker' in navigator) {
   <div class="site-section">
     <div class="site-section-row">
       <label>Protocol Area</label>
-      <input type="text" id="protocolArea" list="protocolListDL"
-        placeholder="Select a protocol area"
-        oninput="autoSaveCurrent()" autocomplete="off">
-      <datalist id="protocolListDL"></datalist>
-      <button class="site-import-btn" onclick="importProtocolList()" title="Load protocol list from .txt file">
-        &#128196; Protocols
-      </button>
-      <input type="file" id="protocolListFile" accept=".txt" style="display:none" onchange="handleProtocolListFile(event)">
+      <select id="protocolArea" onchange="autoSaveCurrent()"
+        style="flex:1;padding:12px 14px;background:var(--input-bg);border:1.5px solid var(--border);border-radius:8px;color:var(--text);font-size:15px;-webkit-appearance:none;appearance:none;">
+        <option value="">— Select Protocol Area —</option>
+        <option value="Air Emissions">Air Emissions</option>
+        <option value="Cultural Resources">Cultural Resources</option>
+        <option value="Environmental Management">Environmental Management</option>
+        <option value="Hazardous Materials">Hazardous Materials</option>
+        <option value="Hazardous Waste">Hazardous Waste</option>
+        <option value="Materials Management">Materials Management</option>
+        <option value="Noise & Radiation">Noise &amp; Radiation</option>
+        <option value="Oil Operations">Oil Operations</option>
+        <option value="Pesticide Management">Pesticide Management</option>
+        <option value="Pollution Prevention">Pollution Prevention</option>
+        <option value="Storage Operations">Storage Operations</option>
+        <option value="Stormwater">Stormwater</option>
+        <option value="Tanks & Transportation">Tanks &amp; Transportation</option>
+        <option value="Wastewater">Wastewater</option>
+        <option value="Water Quality">Water Quality</option>
+        <option value="FS: Pesticides">FS: Pesticides</option>
+        <option value="FS: Wastewater">FS: Wastewater</option>
+        <option value="FS: Water Quality">FS: Water Quality</option>
+      </select>
     </div>
-    <div class="site-list-hint" id="protocolListHint"></div>
   </div>
 
   <!-- -- ENTRY FORM -- -->
@@ -778,7 +791,6 @@ const LS_SAVED   = 'usfs_saved';
 const LS_CURRENT = 'usfs_current';
 const LS_PHOTOS  = 'usfs_photo_settings';
 const LS_SITES   = 'usfs_site_list';
-const LS_PROTOCOLS = 'usfs_protocol_list';
 const IDB_NAME   = 'usfs_photos_v1';
 
 // ============================================================================
@@ -790,7 +802,6 @@ let currentEntryId = null;
 let savedPanelOpen = false;
 let extraPhotoSlots = [];
 let siteList       = [];
-let protocolList   = [];
 let currentGPS     = null;
 let editingIndex   = null;
 
@@ -821,13 +832,6 @@ function init() {
     if (sl) siteList = JSON.parse(sl);
   } catch(e) {}
   populateSiteDatalist();
-
-  // Load saved protocol list
-  try {
-    const pl = localStorage.getItem(LS_PROTOCOLS);
-    if (pl) protocolList = JSON.parse(pl);
-  } catch(e) {}
-  populateProtocolDatalist();
 
   // Auto-fill location from today's most recent saved entry
   if (!document.getElementById('siteName').value.trim()) {
@@ -880,47 +884,6 @@ function handleSiteListFile(event) {
     try { localStorage.setItem(LS_SITES, JSON.stringify(siteList)); } catch(e) {}
     populateSiteDatalist();
     showToast(`\u2714 Loaded ${lines.length} location${lines.length !== 1 ? 's' : ''}`);
-  };
-  reader.readAsText(file);
-}
-
-// ============================================================================
-// PROTOCOL AREA LIST
-// ============================================================================
-function populateProtocolDatalist() {
-  const dl   = document.getElementById('protocolListDL');
-  const hint = document.getElementById('protocolListHint');
-  if (!dl) return;
-  dl.innerHTML = protocolList.map(p => `<option value="${p.replace(/"/g,'&quot;')}">`).join('');
-  if (protocolList.length > 0) {
-    hint.textContent = `${protocolList.length} protocol${protocolList.length !== 1 ? 's' : ''} loaded — tap the field to see the list`;
-    hint.classList.add('visible');
-  } else {
-    hint.classList.remove('visible');
-  }
-}
-
-function importProtocolList() {
-  document.getElementById('protocolListFile').value = '';
-  document.getElementById('protocolListFile').click();
-}
-
-function handleProtocolListFile(event) {
-  const file = event.target.files[0];
-  if (!file) return;
-  const reader = new FileReader();
-  reader.onload = e => {
-    const lines = e.target.result
-      .split(/\r?\n/)
-      .map(l => l.trim())
-      .filter(l => l.length > 0 && !l.startsWith('#'));
-
-    if (lines.length === 0) { showToast('No protocols found in file', true); return; }
-
-    protocolList = lines;
-    try { localStorage.setItem(LS_PROTOCOLS, JSON.stringify(protocolList)); } catch(e) {}
-    populateProtocolDatalist();
-    showToast(`\u2714 Loaded ${lines.length} protocol${lines.length !== 1 ? 's' : ''}`);
   };
   reader.readAsText(file);
 }
