@@ -1,7 +1,8 @@
-const CACHE_NAME = 'usfs-collector-v1.0';
+const CACHE_NAME = 'usfs-collector-v1.1';
 const URLS_TO_CACHE = [
   './',
   './index.html',
+  './team_guide_citations.json',
   'https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js'
 ];
 
@@ -28,7 +29,8 @@ self.addEventListener('fetch', event => {
   const url = new URL(event.request.url);
   const isHTML = event.request.mode === 'navigate'
     || url.pathname.endsWith('.html')
-    || url.pathname.endsWith('/');
+    || url.pathname.endsWith('/')
+    || url.pathname.endsWith('.json');
 
   if (isHTML) {
     event.respondWith(

@@ -210,6 +210,21 @@ if ('serviceWorker' in navigator) {
     display: none;
   }
   .site-list-hint.visible { display: block; }
+
+  .tg-item {
+    padding: 10px 12px;
+    border-bottom: 1px solid var(--border);
+    cursor: pointer;
+    transition: background 0.15s;
+  }
+  .tg-item:last-child { border-bottom: none; }
+  .tg-item:hover, .tg-item:focus { background: var(--card-alt); outline: none; }
+  .tg-item-code { font-weight: 700; font-size: 13px; color: var(--accent); font-family: monospace; }
+  .tg-item-section { font-size: 11px; color: var(--warning); margin-left: 6px; }
+  .tg-item-desc { font-size: 12px; color: var(--text-dim); margin-top: 3px; line-height: 1.3; }
+  .tg-item-cite { font-size: 11px; color: var(--text-label); margin-top: 2px; font-style: italic; }
+  .tg-no-results { padding: 14px; text-align: center; color: var(--text-dim); font-size: 13px; }
+
   .site-import-btn {
     flex-shrink: 0;
     background: transparent;
@@ -595,9 +610,18 @@ if ('serviceWorker' in navigator) {
   <div class="entry-section">
     <h2 id="entryFormTitle">&#128269; New Entry</h2>
 
-    <div class="form-group">
+    <div class="form-group" style="position:relative;">
       <label>Team Guide Citation</label>
-      <input type="text" id="teamGuideCitation" placeholder="e.g. TG-2024-3.2.1" oninput="autoSaveCurrent()">
+      <div style="display:flex;gap:6px;align-items:stretch;">
+        <input type="text" id="tgSearch" placeholder="Search citations... (e.g. flammable, 1910, RCRA)"
+          autocomplete="off" oninput="filterCitations()" onfocus="filterCitations()">
+        <button class="btn btn-outline btn-sm" id="tgClearBtn" onclick="clearCitation()"
+          style="flex-shrink:0;padding:0 10px;display:none;color:var(--danger);border-color:var(--danger);">&#10005;</button>
+      </div>
+      <div id="tgResults" style="display:none;position:absolute;left:0;right:0;top:100%;z-index:100;max-height:260px;overflow-y:auto;background:var(--card);border:1.5px solid var(--border);border-radius:0 0 8px 8px;box-shadow:0 8px 24px rgba(0,0,0,0.4);"></div>
+      <div id="tgSelected" style="display:none;margin-top:6px;padding:8px 10px;background:var(--card-alt);border-radius:6px;font-size:12px;line-height:1.4;">
+      </div>
+      <input type="hidden" id="teamGuideCitation" value="">
     </div>
 
     <div class="form-group">
@@ -1021,6 +1045,7 @@ function clearEntryForm(confirmFirst = true) {
   // Keep the location dropdown value (user typically stays at same location)
   document.getElementById('entryDetails').value  = '';
   document.getElementById('teamGuideCitation').value = '';
+  clearCitation();
   updateGPSDisplay();
 
   const PH = `<span class="placeholder">
@@ -1134,6 +1159,7 @@ function editEntry(index) {
   document.getElementById('siteName').value      = entry.location || '';
   document.getElementById('protocolArea').value  = entry.protocolArea || '';
   document.getElementById('teamGuideCitation').value = entry.teamGuideCitation || '';
+  restoreCitationDisplay();
   document.getElementById('entryDetails').value  = entry.details  || '';
 
   // Restore GPS
@@ -1919,6 +1945,158 @@ function clearGPS() {
 }
 
 // ============================================================================
+// TEAM GUIDE CITATION SEARCH
+// ============================================================================
+let tgCitations = [];
+let tgLoaded = false;
+
+async function loadCitations() {
+  if (tgLoaded) return;
+  try {
+    const resp = await fetch('./team_guide_citations.json');
+    tgCitations = await resp.json();
+    tgLoaded = true;
+    console.log(`Loaded ${tgCitations.length} Team Guide citations`);
+  } catch(e) {
+    console.warn('Could not load citations:', e);
+  }
+}
+
+// Load on startup
+loadCitations();
+
+let tgDebounce = null;
+function filterCitations() {
+  clearTimeout(tgDebounce);
+  tgDebounce = setTimeout(_filterCitations, 150);
+}
+
+function _filterCitations() {
+  const query = document.getElementById('tgSearch').value.trim().toLowerCase();
+  const resultsDiv = document.getElementById('tgResults');
+
+  if (!query || query.length < 2) {
+    resultsDiv.style.display = 'none';
+    return;
+  }
+
+  if (!tgLoaded) {
+    resultsDiv.innerHTML = '<div class="tg-no-results">Loading citations...</div>';
+    resultsDiv.style.display = 'block';
+    loadCitations().then(() => _filterCitations());
+    return;
+  }
+
+  const terms = query.split(/\s+/).filter(Boolean);
+  const scored = [];
+
+  for (let i = 0; i < tgCitations.length; i++) {
+    const item = tgCitations[i];
+    const haystack = (item.c + ' ' + item.s + ' ' + item.d + ' ' + item.r).toLowerCase();
+    let match = true;
+    let score = 0;
+    for (const term of terms) {
+      if (!haystack.includes(term)) { match = false; break; }
+      // Boost exact code matches
+      if (item.c.toLowerCase().includes(term)) score += 10;
+      // Boost citation matches
+      if (item.r.toLowerCase().includes(term)) score += 5;
+      score += 1;
+    }
+    if (match) scored.push({ idx: i, score });
+  }
+
+  scored.sort((a, b) => b.score - a.score);
+  const top = scored.slice(0, 30);
+
+  if (top.length === 0) {
+    resultsDiv.innerHTML = '<div class="tg-no-results">No matching citations found</div>';
+    resultsDiv.style.display = 'block';
+    return;
+  }
+
+  resultsDiv.innerHTML = top.map(({ idx }) => {
+    const item = tgCitations[idx];
+    return `<div class="tg-item" tabindex="0" onclick="selectCitation(${idx})" onkeydown="if(event.key==='Enter')selectCitation(${idx})">
+      <div><span class="tg-item-code">${esc(item.c)}</span><span class="tg-item-section">${esc(item.s)}</span></div>
+      <div class="tg-item-desc">${esc(item.d)}</div>
+      ${item.r ? `<div class="tg-item-cite">${esc(item.r)}</div>` : ''}
+    </div>`;
+  }).join('');
+  resultsDiv.style.display = 'block';
+}
+
+function esc(s) {
+  const d = document.createElement('div');
+  d.textContent = s;
+  return d.innerHTML;
+}
+
+function selectCitation(idx) {
+  const item = tgCitations[idx];
+  const citText = item.r ? `${item.c} — ${item.r}` : item.c;
+
+  document.getElementById('teamGuideCitation').value = citText;
+  document.getElementById('tgSearch').value = '';
+  document.getElementById('tgResults').style.display = 'none';
+
+  const sel = document.getElementById('tgSelected');
+  sel.innerHTML = `<div style="font-weight:600;color:var(--accent);font-family:monospace;">${esc(item.c)}</div>
+    <div style="color:var(--text);">${esc(item.d)}</div>
+    ${item.r ? `<div style="color:var(--text-label);font-style:italic;margin-top:2px;">${esc(item.r)}</div>` : ''}
+    <div style="color:var(--text-dim);margin-top:2px;">${esc(item.s)}</div>`;
+  sel.style.display = 'block';
+  document.getElementById('tgClearBtn').style.display = 'flex';
+
+  autoSaveCurrent();
+}
+
+function clearCitation() {
+  document.getElementById('teamGuideCitation').value = '';
+  document.getElementById('tgSearch').value = '';
+  document.getElementById('tgResults').style.display = 'none';
+  document.getElementById('tgSelected').style.display = 'none';
+  document.getElementById('tgClearBtn').style.display = 'none';
+  autoSaveCurrent();
+}
+
+function restoreCitationDisplay() {
+  const val = document.getElementById('teamGuideCitation').value;
+  if (!val) {
+    document.getElementById('tgSelected').style.display = 'none';
+    document.getElementById('tgClearBtn').style.display = 'none';
+    return;
+  }
+  // Try to find matching citation and show it
+  const code = val.split(' — ')[0].trim();
+  loadCitations().then(() => {
+    const idx = tgCitations.findIndex(c => c.c === code);
+    if (idx >= 0) {
+      const item = tgCitations[idx];
+      const sel = document.getElementById('tgSelected');
+      sel.innerHTML = `<div style="font-weight:600;color:var(--accent);font-family:monospace;">${esc(item.c)}</div>
+        <div style="color:var(--text);">${esc(item.d)}</div>
+        ${item.r ? `<div style="color:var(--text-label);font-style:italic;margin-top:2px;">${esc(item.r)}</div>` : ''}
+        <div style="color:var(--text-dim);margin-top:2px;">${esc(item.s)}</div>`;
+      sel.style.display = 'block';
+    } else {
+      const sel = document.getElementById('tgSelected');
+      sel.innerHTML = `<div style="font-weight:600;color:var(--accent);font-family:monospace;">${esc(val)}</div>`;
+      sel.style.display = 'block';
+    }
+    document.getElementById('tgClearBtn').style.display = 'flex';
+  });
+}
+
+// Close results when clicking outside
+document.addEventListener('click', e => {
+  const container = document.querySelector('.form-group:has(#tgSearch)');
+  if (container && !container.contains(e.target)) {
+    document.getElementById('tgResults').style.display = 'none';
+  }
+});
+
+// ============================================================================
 // PERSISTENCE
 // ============================================================================
 function autoSaveCurrent() {
@@ -1953,6 +2131,7 @@ function loadAll() {
     document.getElementById('siteName').value      = state.siteName      || '';
     document.getElementById('protocolArea').value  = state.protocolArea  || '';
     document.getElementById('teamGuideCitation').value = state.teamGuideCitation || '';
+    restoreCitationDisplay();
     document.getElementById('entryDetails').value   = state.entryDetails  || '';
 
     currentPhotos  = state.currentPhotos  || {};
