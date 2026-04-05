@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no, viewport-fit=cover">
 <meta name="apple-mobile-web-app-title" content="USFS Photo Collector">
 <link rel="manifest" href="manifest.json">
 <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
@@ -43,6 +43,8 @@ if ('serviceWorker' in navigator) {
     color: var(--text);
     min-height: 100vh;
     -webkit-tap-highlight-color: transparent;
+    -webkit-overflow-scrolling: touch;
+    overflow-y: auto;
   }
 
   /* -- Header -- */
@@ -50,6 +52,7 @@ if ('serviceWorker' in navigator) {
     background: var(--card);
     border-bottom: 1px solid var(--border);
     padding: 12px 20px;
+    padding-top: calc(12px + env(safe-area-inset-top, 0px));
     display: flex;
     align-items: center;
     justify-content: space-between;
@@ -369,6 +372,7 @@ if ('serviceWorker' in navigator) {
     background: var(--card);
     border-top: 1px solid var(--border);
     padding: 12px 20px;
+    padding-bottom: calc(12px + env(safe-area-inset-bottom, 0px));
     display: flex;
     justify-content: space-between;
     align-items: center;
@@ -1734,16 +1738,8 @@ async function runExport() {
 
   try {
     const blob = await zip.generateAsync({ type: 'blob' });
-    const url  = URL.createObjectURL(blob);
-    const a    = document.createElement('a');
-    a.href     = url;
-    a.download = 'USFS_Export_' + datestamp() + '.zip';
-    document.body.appendChild(a);
-    a.click();
-    document.body.removeChild(a);
-    URL.revokeObjectURL(url);
-    const endRef = fmtRef(parsed.prefix, counter - 1, parsed.digits);
-    showToast(`Exported ${allEntries.length} entries, ${photoCount} photos (${pStr}\u2013${endRef})`);
+    await shareOrDownload(blob, 'USFS_Export_' + datestamp() + '.zip');
+    showToast(`Exported ${allEntries.length} entries, ${photoCount} photos`);
 
     // Clean up localStorage fallback copies
     try {
@@ -1763,7 +1759,7 @@ async function runExport() {
 // ============================================================================
 // BACKUP / IMPORT
 // ============================================================================
-function saveBackup() {
+async function saveBackup() {
   let all = JSON.parse(JSON.stringify(savedEntries));
   const loc = document.getElementById('siteName').value.trim();
   const prot = document.getElementById('protocolArea').value.trim();
@@ -1786,11 +1782,7 @@ function saveBackup() {
 
   const clean = all.map(({ photos, ...rest }) => rest);
   const blob  = new Blob([JSON.stringify({ version:1, exported: new Date().toISOString(), entries: clean }, null, 2)], { type:'application/json' });
-  const url   = URL.createObjectURL(blob);
-  const a     = document.createElement('a');
-  a.href = url; a.download = `USFS_Backup_${datestamp()}.json`;
-  document.body.appendChild(a); a.click();
-  document.body.removeChild(a); URL.revokeObjectURL(url);
+  await shareOrDownload(blob, `USFS_Backup_${datestamp()}.json`);
   showToast(`Backup saved \u2014 ${clean.length} entries`);
 }
 
@@ -2307,6 +2299,31 @@ function quote(val) {
 function datestamp() {
   const d = new Date();
   return `${String(d.getMonth()+1).padStart(2,'0')}${String(d.getDate()).padStart(2,'0')}${String(d.getFullYear()).slice(2)}`;
+}
+
+async function shareOrDownload(blob, filename) {
+  // Use Web Share API if available (Capacitor / iOS) — triggers native share sheet
+  if (navigator.canShare && navigator.canShare({ files: [new File([blob], filename)] })) {
+    try {
+      await navigator.share({
+        files: [new File([blob], filename, { type: blob.type })],
+        title: filename
+      });
+      return;
+    } catch(e) {
+      if (e.name === 'AbortError') return; // user cancelled share sheet
+      // Fall through to download
+    }
+  }
+  // Fallback: blob download (works in regular browsers)
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
 }
 
 function showToast(msg, isWarn = false) {
