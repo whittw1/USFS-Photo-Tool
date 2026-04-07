@@ -228,6 +228,17 @@ if ('serviceWorker' in navigator) {
   .tg-item-cite { font-size: 11px; color: var(--text-label); margin-top: 2px; font-style: italic; }
   .tg-no-results { padding: 14px; text-align: center; color: var(--text-dim); font-size: 13px; }
 
+  .loc-item {
+    padding: 12px 14px;
+    border-bottom: 1px solid var(--border);
+    cursor: pointer;
+    font-size: 14px;
+    color: var(--text);
+    transition: background 0.15s;
+  }
+  .loc-item:last-child { border-bottom: none; }
+  .loc-item:hover, .loc-item:active { background: var(--card-alt); }
+
   .site-import-btn {
     flex-shrink: 0;
     background: transparent;
@@ -585,20 +596,35 @@ if ('serviceWorker' in navigator) {
     <div class="saved-panel-body collapsed" id="savedPanelBody"></div>
   </div>
 
-  <!-- -- LOCATION DROPDOWN -- -->
+  <!-- -- LOCATION -- -->
   <div class="site-section">
     <div class="site-section-row">
       <label>Location</label>
-      <input type="text" id="siteName" list="siteListDL"
-        placeholder="Select or type a location"
-        oninput="autoSaveCurrent()" autocomplete="off">
-      <datalist id="siteListDL"></datalist>
+      <input type="text" id="siteName"
+        placeholder="Type a location or tap list button"
+        oninput="autoSaveCurrent()" autocomplete="off" style="flex:1;">
+      <button class="btn btn-outline btn-sm" onclick="showLocationPicker()" title="Pick from location list"
+        style="flex-shrink:0;white-space:nowrap;padding:0 12px;">&#128205; List</button>
       <button class="site-import-btn" onclick="importSiteList()" title="Load location list from .txt file">
-        &#128196; Locations
+        &#128196; Import
       </button>
       <input type="file" id="siteListFile" accept=".txt" style="display:none" onchange="handleSiteListFile(event)">
     </div>
     <div class="site-list-hint" id="siteListHint"></div>
+  </div>
+
+  <!-- -- LOCATION PICKER MODAL -- -->
+  <div class="dialog-overlay" id="locationPickerOverlay" style="display:none;" onclick="if(event.target===this)closeLocationPicker()">
+    <div class="dialog" style="max-width:500px;max-height:80vh;display:flex;flex-direction:column;">
+      <h3>&#128205; Select Location</h3>
+      <input type="text" id="locationPickerSearch" placeholder="Filter locations..."
+        oninput="filterLocationPicker()"
+        style="padding:10px 12px;background:var(--input-bg);border:1.5px solid var(--border);border-radius:8px;color:var(--text);font-size:15px;margin-bottom:8px;">
+      <div id="locationPickerList" style="flex:1;overflow-y:auto;max-height:50vh;border:1px solid var(--border);border-radius:8px;background:var(--input-bg);"></div>
+      <div class="dialog-actions" style="margin-top:10px;">
+        <button class="btn btn-outline btn-sm" onclick="closeLocationPicker()">Cancel</button>
+      </div>
+    </div>
   </div>
 
   <!-- -- PROTOCOL AREA DROPDOWN -- -->
@@ -883,16 +909,59 @@ function init() {
 // LOCATION LIST
 // ============================================================================
 function populateSiteDatalist() {
-  const dl   = document.getElementById('siteListDL');
   const hint = document.getElementById('siteListHint');
-  if (!dl) return;
-  dl.innerHTML = siteList.map(s => `<option value="${s.replace(/"/g,'&quot;')}">`).join('');
   if (siteList.length > 0) {
-    hint.textContent = `${siteList.length} location${siteList.length !== 1 ? 's' : ''} loaded — tap the field to see the list`;
+    hint.textContent = `${siteList.length} location${siteList.length !== 1 ? 's' : ''} loaded — tap List to pick`;
     hint.classList.add('visible');
   } else {
     hint.classList.remove('visible');
   }
+}
+
+function showLocationPicker() {
+  if (siteList.length === 0) {
+    showToast('No locations loaded — tap Import to load a .txt file', true);
+    return;
+  }
+  document.getElementById('locationPickerSearch').value = '';
+  renderLocationList(siteList);
+  document.getElementById('locationPickerOverlay').style.display = 'flex';
+  setTimeout(() => document.getElementById('locationPickerSearch').focus(), 100);
+}
+
+function closeLocationPicker() {
+  document.getElementById('locationPickerOverlay').style.display = 'none';
+}
+
+function filterLocationPicker() {
+  const query = document.getElementById('locationPickerSearch').value.trim().toLowerCase();
+  if (!query) {
+    renderLocationList(siteList);
+    return;
+  }
+  const terms = query.split(/\s+/);
+  const filtered = siteList.filter(loc => {
+    const hay = loc.toLowerCase();
+    return terms.every(t => hay.includes(t));
+  });
+  renderLocationList(filtered);
+}
+
+function renderLocationList(list) {
+  const container = document.getElementById('locationPickerList');
+  if (list.length === 0) {
+    container.innerHTML = '<div class="tg-no-results">No matching locations</div>';
+    return;
+  }
+  container.innerHTML = list.map(loc =>
+    `<div class="loc-item" onclick="pickLocation(this.textContent)">${loc.replace(/</g,'&lt;')}</div>`
+  ).join('');
+}
+
+function pickLocation(loc) {
+  document.getElementById('siteName').value = loc;
+  closeLocationPicker();
+  autoSaveCurrent();
 }
 
 function importSiteList() {
