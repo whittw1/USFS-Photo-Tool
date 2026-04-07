@@ -965,8 +965,18 @@ function pickLocation(loc) {
 }
 
 function importSiteList() {
-  document.getElementById('siteListFile').value = '';
-  document.getElementById('siteListFile').click();
+  // Destroy and recreate the file input to avoid iOS caching the previous file
+  const old = document.getElementById('siteListFile');
+  const parent = old.parentNode;
+  old.remove();
+  const fresh = document.createElement('input');
+  fresh.type = 'file';
+  fresh.id = 'siteListFile';
+  fresh.accept = '.txt';
+  fresh.style.display = 'none';
+  fresh.onchange = handleSiteListFile;
+  parent.appendChild(fresh);
+  fresh.click();
 }
 
 function handleSiteListFile(event) {
