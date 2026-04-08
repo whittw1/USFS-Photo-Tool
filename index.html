@@ -596,6 +596,18 @@ if ('serviceWorker' in navigator) {
     <div class="saved-panel-body collapsed" id="savedPanelBody"></div>
   </div>
 
+  <!-- -- FOREST SELECTOR -- -->
+  <div class="site-section">
+    <div class="site-section-row">
+      <label>Forest</label>
+      <select id="forestSelect" onchange="onForestChange()"
+        style="flex:1;padding:10px 14px;background:var(--input-bg);border:1.5px solid var(--border);border-radius:8px;color:var(--text);font-size:15px;-webkit-appearance:none;appearance:none;">
+        <option value="">— Select Forest —</option>
+      </select>
+    </div>
+    <div class="site-list-hint" id="forestHint"></div>
+  </div>
+
   <!-- -- LOCATION -- -->
   <div class="site-section">
     <div class="site-section-row">
@@ -617,6 +629,7 @@ if ('serviceWorker' in navigator) {
   <div class="dialog-overlay" id="locationPickerOverlay" style="display:none;" onclick="if(event.target===this)closeLocationPicker()">
     <div class="dialog" style="max-width:500px;max-height:80vh;display:flex;flex-direction:column;">
       <h3>&#128205; Select Location</h3>
+      <div id="locationPickerGPSHint" style="font-size:12px;color:var(--text-dim);margin-bottom:6px;display:none;"></div>
       <input type="text" id="locationPickerSearch" placeholder="Filter locations..."
         oninput="filterLocationPicker()"
         style="padding:10px 12px;background:var(--input-bg);border:1.5px solid var(--border);border-radius:8px;color:var(--text);font-size:15px;margin-bottom:8px;">
@@ -684,6 +697,7 @@ if ('serviceWorker' in navigator) {
         <option value="Observation">Observation</option>
         <option value="Positive">Positive</option>
         <option value="Corrected On Site">Corrected On Site</option>
+        <option value="General">General</option>
       </select>
     </div>
 
@@ -861,6 +875,9 @@ let extraPhotoSlots = [];
 let siteList       = [];
 let currentGPS     = null;
 let editingIndex   = null;
+let forestData     = {};   // { "Forest Name": [ {n, t, d, lat, lng}, ... ] }
+let selectedForest = '';
+const LS_FOREST    = 'usfs_selected_forest';
 
 // ============================================================================
 // INIT
@@ -884,10 +901,11 @@ function init() {
   checkStorage();
   checkPreviousDayEntries();
 
-  // Load saved location list
+  // Load forest location data, then fall back to imported list
+  loadForestData();
   try {
     const sl = localStorage.getItem(LS_SITES);
-    if (sl) siteList = JSON.parse(sl);
+    if (sl && !localStorage.getItem(LS_FOREST)) siteList = JSON.parse(sl);
   } catch(e) {}
   populateSiteDatalist();
 
@@ -906,25 +924,90 @@ function init() {
 }
 
 // ============================================================================
+// FOREST LOCATIONS
+// ============================================================================
+async function loadForestData() {
+  try {
+    const resp = await fetch('./forest_locations.json');
+    if (!resp.ok) throw new Error('fetch failed');
+    forestData = await resp.json();
+    const sel = document.getElementById('forestSelect');
+    const names = Object.keys(forestData).sort();
+    names.forEach(f => {
+      const opt = document.createElement('option');
+      opt.value = f;
+      opt.textContent = `${f} (${forestData[f].length})`;
+      sel.appendChild(opt);
+    });
+    // Restore saved forest
+    const saved = localStorage.getItem(LS_FOREST);
+    if (saved && forestData[saved]) {
+      sel.value = saved;
+      onForestChange(true);
+    }
+    console.log(`Loaded ${names.length} forests, ${Object.values(forestData).reduce((a, b) => a + b.length, 0)} locations`);
+  } catch (e) {
+    console.warn('Could not load forest_locations.json:', e);
+  }
+}
+
+function onForestChange(silent) {
+  const sel = document.getElementById('forestSelect');
+  selectedForest = sel.value;
+  localStorage.setItem(LS_FOREST, selectedForest);
+
+  const hint = document.getElementById('forestHint');
+  if (selectedForest && forestData[selectedForest]) {
+    const locs = forestData[selectedForest];
+    siteList = locs.map(l => l.n + (l.d ? ' — ' + l.d : ''));
+    hint.textContent = `${locs.length} locations available — tap List to pick or GPS to auto-suggest`;
+    hint.classList.add('visible');
+    if (!silent) showToast(`Loaded ${locs.length} locations for ${selectedForest}`);
+  } else {
+    // Fall back to imported list if no forest selected
+    try {
+      const sl = localStorage.getItem(LS_SITES);
+      if (sl) siteList = JSON.parse(sl);
+      else siteList = [];
+    } catch(e) { siteList = []; }
+    hint.classList.remove('visible');
+  }
+  populateSiteDatalist();
+  autoSaveCurrent();
+}
+
+// ============================================================================
 // LOCATION LIST
 // ============================================================================
 function populateSiteDatalist() {
   const hint = document.getElementById('siteListHint');
-  if (siteList.length > 0) {
+  if (siteList.length > 0 && !selectedForest) {
     hint.textContent = `${siteList.length} location${siteList.length !== 1 ? 's' : ''} loaded — tap List to pick`;
     hint.classList.add('visible');
+  } else if (!selectedForest) {
+    hint.classList.remove('visible');
   } else {
     hint.classList.remove('visible');
   }
 }
 
 function showLocationPicker() {
-  if (siteList.length === 0) {
-    showToast('No locations loaded — tap Import to load a .txt file', true);
+  if (siteList.length === 0 && !selectedForest) {
+    showToast('Select a forest or import a .txt file first', true);
     return;
   }
   document.getElementById('locationPickerSearch').value = '';
-  renderLocationList(siteList);
+
+  // Show GPS hint if we have coordinates
+  const gpsHint = document.getElementById('locationPickerGPSHint');
+  if (currentGPS && selectedForest) {
+    gpsHint.textContent = 'Sorted by distance from your GPS position';
+    gpsHint.style.display = 'block';
+  } else {
+    gpsHint.style.display = 'none';
+  }
+
+  renderLocationList(getLocationDisplayList());
   document.getElementById('locationPickerOverlay').style.display = 'flex';
   setTimeout(() => document.getElementById('locationPickerSearch').focus(), 100);
 }
@@ -933,18 +1016,48 @@ function closeLocationPicker() {
   document.getElementById('locationPickerOverlay').style.display = 'none';
 }
 
+// Haversine distance in miles
+function haversineMi(lat1, lng1, lat2, lng2) {
+  const R = 3958.8;
+  const dLat = (lat2 - lat1) * Math.PI / 180;
+  const dLng = (lng2 - lng1) * Math.PI / 180;
+  const a = Math.sin(dLat / 2) ** 2 +
+    Math.cos(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) *
+    Math.sin(dLng / 2) ** 2;
+  return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+}
+
+function getLocationDisplayList() {
+  if (selectedForest && forestData[selectedForest]) {
+    const locs = forestData[selectedForest];
+    let items = locs.map(l => ({
+      name: l.n + (l.d ? ' — ' + l.d : ''),
+      type: l.t,
+      dist: (currentGPS ? haversineMi(currentGPS.latitude, currentGPS.longitude, l.lat, l.lng) : null)
+    }));
+    // Sort by distance if GPS available, else alphabetical
+    if (currentGPS) {
+      items.sort((a, b) => a.dist - b.dist);
+    } else {
+      items.sort((a, b) => a.name.localeCompare(b.name));
+    }
+    return items;
+  }
+  // Fallback: imported siteList (no distance info)
+  return siteList.map(s => ({ name: s, type: '', dist: null }));
+}
+
 function filterLocationPicker() {
   const query = document.getElementById('locationPickerSearch').value.trim().toLowerCase();
-  if (!query) {
-    renderLocationList(siteList);
-    return;
+  let items = getLocationDisplayList();
+  if (query) {
+    const terms = query.split(/\s+/);
+    items = items.filter(item => {
+      const hay = (item.name + ' ' + item.type).toLowerCase();
+      return terms.every(t => hay.includes(t));
+    });
   }
-  const terms = query.split(/\s+/);
-  const filtered = siteList.filter(loc => {
-    const hay = loc.toLowerCase();
-    return terms.every(t => hay.includes(t));
-  });
-  renderLocationList(filtered);
+  renderLocationList(items);
 }
 
 function renderLocationList(list) {
@@ -953,15 +1066,40 @@ function renderLocationList(list) {
     container.innerHTML = '<div class="tg-no-results">No matching locations</div>';
     return;
   }
-  container.innerHTML = list.map(loc =>
-    `<div class="loc-item" onclick="pickLocation(this.textContent)">${loc.replace(/</g,'&lt;')}</div>`
-  ).join('');
+  container.innerHTML = list.map(item => {
+    const distStr = item.dist !== null ? `<span style="color:var(--text-dim);font-size:12px;float:right;">${item.dist < 0.1 ? '< 0.1' : item.dist.toFixed(1)} mi</span>` : '';
+    const typeStr = item.type ? `<span style="color:var(--text-dim);font-size:11px;"> [${item.type}]</span>` : '';
+    return `<div class="loc-item" onclick="pickLocation('${item.name.replace(/'/g, "\\'")}')">` +
+      `${distStr}${item.name.replace(/</g,'&lt;')}${typeStr}</div>`;
+  }).join('');
 }
 
 function pickLocation(loc) {
   document.getElementById('siteName').value = loc;
   closeLocationPicker();
   autoSaveCurrent();
+}
+
+// GPS auto-suggest: called after GPS capture
+function autoSuggestLocation() {
+  if (!currentGPS || !selectedForest || !forestData[selectedForest]) return;
+  const siteName = document.getElementById('siteName');
+  // Only auto-suggest if location field is empty
+  if (siteName.value.trim()) return;
+
+  const locs = forestData[selectedForest];
+  let bestDist = Infinity, bestLoc = null;
+  for (const l of locs) {
+    const d = haversineMi(currentGPS.latitude, currentGPS.longitude, l.lat, l.lng);
+    if (d < bestDist) { bestDist = d; bestLoc = l; }
+  }
+  if (bestLoc && bestDist < 50) {
+    const name = bestLoc.n + (bestLoc.d ? ' — ' + bestLoc.d : '');
+    siteName.value = name;
+    const distTxt = bestDist < 0.1 ? '< 0.1 mi' : bestDist.toFixed(1) + ' mi';
+    showToast(`Auto-suggested: ${bestLoc.n} (${distTxt} away)`);
+    autoSaveCurrent();
+  }
 }
 
 function importSiteList() {
@@ -1947,6 +2085,7 @@ function captureGPS(silent) {
         const acc = Math.round(pos.coords.accuracy);
         currentGPS = { latitude: lat, longitude: lon, accuracy: acc };
         updateGPSDisplay();
+        autoSuggestLocation();
         autoSaveCurrent();
         resolve(currentGPS);
       },
@@ -2176,6 +2315,7 @@ function autoSaveCurrent() {
   try {
     localStorage.setItem(LS_CURRENT, JSON.stringify({
       siteName:      document.getElementById('siteName').value,
+      forest:        document.getElementById('forestSelect').value,
       protocolArea:  document.getElementById('protocolArea').value,
       teamGuideCitation: document.getElementById('teamGuideCitation').value,
       score:         document.getElementById('entryScore').value,

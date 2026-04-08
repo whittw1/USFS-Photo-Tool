@@ -1,8 +1,9 @@
-const CACHE_NAME = 'usfs-collector-v1.1';
+const CACHE_NAME = 'usfs-collector-v1.2';
 const URLS_TO_CACHE = [
   './',
   './index.html',
   './team_guide_citations.json',
+  './forest_locations.json',
   'https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js'
 ];
 
