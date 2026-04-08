@@ -274,6 +274,30 @@ if ('serviceWorker' in navigator) {
 
   .form-group { display: flex; flex-direction: column; gap: 6px; margin-bottom: 14px; }
   .form-group:last-of-type { margin-bottom: 0; }
+  .score-buttons {
+    display: flex; flex-wrap: wrap; gap: 8px;
+  }
+  .score-btn {
+    flex: 1 1 auto;
+    min-width: 80px;
+    padding: 10px 6px;
+    font-size: 13px;
+    font-weight: 600;
+    font-family: inherit;
+    border: 1.5px solid var(--border);
+    border-radius: 8px;
+    background: var(--input-bg);
+    color: var(--text-dim);
+    cursor: pointer;
+    transition: all 0.15s;
+    -webkit-tap-highlight-color: transparent;
+  }
+  .score-btn:active { transform: scale(0.96); }
+  .score-btn.active {
+    border-color: var(--accent);
+    background: var(--accent);
+    color: #fff;
+  }
   .form-group label {
     font-size: 12px;
     font-weight: 600;
@@ -708,16 +732,15 @@ if ('serviceWorker' in navigator) {
 
     <div class="form-group">
       <label>Score</label>
-      <select id="entryScore" onchange="autoSaveCurrent()"
-        style="padding:12px 14px;background:var(--input-bg);border:1.5px solid var(--border);border-radius:8px;color:var(--text);font-size:15px;-webkit-appearance:none;appearance:none;">
-        <option value="">— Select Score —</option>
-        <option value="Safety">Safety</option>
-        <option value="Finding">Finding</option>
-        <option value="Observation">Observation</option>
-        <option value="Positive">Positive</option>
-        <option value="Corrected On Site">Corrected On Site</option>
-        <option value="General">General</option>
-      </select>
+      <input type="hidden" id="entryScore" value="">
+      <div class="score-buttons">
+        <button type="button" class="score-btn" data-score="Safety" onclick="toggleScore(this)">Safety</button>
+        <button type="button" class="score-btn" data-score="Finding" onclick="toggleScore(this)">Finding</button>
+        <button type="button" class="score-btn" data-score="Observation" onclick="toggleScore(this)">Observation</button>
+        <button type="button" class="score-btn" data-score="Positive" onclick="toggleScore(this)">Positive</button>
+        <button type="button" class="score-btn" data-score="Corrected On Site" onclick="toggleScore(this)">Corrected</button>
+        <button type="button" class="score-btn" data-score="General" onclick="toggleScore(this)">General</button>
+      </div>
     </div>
 
     <div class="form-group">
@@ -1358,14 +1381,39 @@ function getAllCurrentSlots() {
 }
 
 // ============================================================================
+// SCORE BUTTONS
+// ============================================================================
+function toggleScore(btn) {
+  const score = btn.dataset.score;
+  const input = document.getElementById('entryScore');
+  if (input.value === score) {
+    // Deselect
+    input.value = '';
+    btn.classList.remove('active');
+  } else {
+    // Select this one, deselect others
+    document.querySelectorAll('.score-btn').forEach(b => b.classList.remove('active'));
+    btn.classList.add('active');
+    input.value = score;
+  }
+  autoSaveCurrent();
+}
+
+function setScoreButtons(value) {
+  document.querySelectorAll('.score-btn').forEach(b => {
+    b.classList.toggle('active', b.dataset.score === value);
+  });
+  document.getElementById('entryScore').value = value || '';
+}
+
+// ============================================================================
 // GENERAL PHOTO SHORTCUT
 // ============================================================================
 function setGeneralPhoto() {
-  document.getElementById('entryScore').value = 'General';
+  setScoreButtons('General');
   document.getElementById('protocolArea').value = '';
   clearCitation();
   autoSaveCurrent();
-  // Scroll to description / photo area
   const desc = document.getElementById('entryDetails');
   desc.focus();
   desc.scrollIntoView({ behavior: 'smooth', block: 'center' });
@@ -1428,7 +1476,7 @@ function clearEntryForm(confirmFirst = true) {
   // Keep the location dropdown value (user typically stays at same location)
   document.getElementById('entryDetails').value  = '';
   document.getElementById('teamGuideCitation').value = '';
-  document.getElementById('entryScore').value = '';
+  setScoreButtons('');
   clearCitation();
   updateGPSDisplay();
 
@@ -1544,7 +1592,7 @@ function editEntry(index) {
   document.getElementById('siteName').value      = entry.location || '';
   document.getElementById('protocolArea').value  = entry.protocolArea || '';
   document.getElementById('teamGuideCitation').value = entry.teamGuideCitation || '';
-  document.getElementById('entryScore').value = entry.score || '';
+  setScoreButtons(entry.score || '');
   restoreCitationDisplay();
   document.getElementById('entryDetails').value  = entry.details  || '';
 
@@ -2516,7 +2564,7 @@ function loadAll() {
     document.getElementById('siteName').value      = state.siteName      || '';
     document.getElementById('protocolArea').value  = state.protocolArea  || '';
     document.getElementById('teamGuideCitation').value = state.teamGuideCitation || '';
-    document.getElementById('entryScore').value = state.score || '';
+    setScoreButtons(state.score || '');
     restoreCitationDisplay();
     document.getElementById('entryDetails').value   = state.entryDetails  || '';
 
