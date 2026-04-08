@@ -637,6 +637,14 @@ if ('serviceWorker' in navigator) {
     <div class="dialog" style="max-width:500px;max-height:80vh;display:flex;flex-direction:column;">
       <h3>&#128205; Select Location</h3>
       <div id="locationPickerGPSHint" style="font-size:12px;color:var(--text-dim);margin-bottom:6px;display:none;"></div>
+      <div id="locationRadiusRow" style="display:none;margin-bottom:8px;">
+        <div style="display:flex;align-items:center;gap:8px;">
+          <button id="radiusNearbyBtn" class="btn btn-sm" onclick="setLocationRadius('nearby')"
+            style="flex:1;padding:8px 0;font-size:13px;border-radius:6px;">Nearby (10 mi)</button>
+          <button id="radiusAllBtn" class="btn btn-outline btn-sm" onclick="setLocationRadius('all')"
+            style="flex:1;padding:8px 0;font-size:13px;border-radius:6px;">All Locations</button>
+        </div>
+      </div>
       <input type="text" id="locationPickerSearch" placeholder="Filter locations..."
         oninput="filterLocationPicker()"
         style="padding:10px 12px;background:var(--input-bg);border:1.5px solid var(--border);border-radius:8px;color:var(--text);font-size:15px;margin-bottom:8px;">
@@ -884,6 +892,8 @@ let currentGPS     = null;
 let editingIndex   = null;
 let forestData     = {};   // { "Forest Name": [ {n, t, d, lat, lng}, ... ] }
 let selectedForest = '';
+let locationRadius = 'nearby'; // 'nearby' or 'all'
+const NEARBY_MILES = 10;
 const LS_FOREST    = 'usfs_selected_forest';
 
 // ============================================================================
@@ -1092,18 +1102,52 @@ function showLocationPicker() {
   }
   document.getElementById('locationPickerSearch').value = '';
 
-  // Show GPS hint if we have coordinates
+  // Show GPS hint and radius toggle if we have coordinates
   const gpsHint = document.getElementById('locationPickerGPSHint');
+  const radiusRow = document.getElementById('locationRadiusRow');
   if (currentGPS && selectedForest) {
     gpsHint.textContent = 'Sorted by distance from your GPS position';
     gpsHint.style.display = 'block';
+    radiusRow.style.display = 'block';
+    updateRadiusButtons();
   } else {
     gpsHint.style.display = 'none';
+    radiusRow.style.display = 'none';
   }
 
   renderLocationList(getLocationDisplayList());
   document.getElementById('locationPickerOverlay').style.display = 'flex';
   setTimeout(() => document.getElementById('locationPickerSearch').focus(), 100);
+}
+
+function setLocationRadius(mode) {
+  locationRadius = mode;
+  updateRadiusButtons();
+  filterLocationPicker();
+}
+
+function updateRadiusButtons() {
+  const nearbyBtn = document.getElementById('radiusNearbyBtn');
+  const allBtn = document.getElementById('radiusAllBtn');
+  if (locationRadius === 'nearby') {
+    nearbyBtn.className = 'btn btn-sm';
+    nearbyBtn.style.background = 'var(--accent)';
+    nearbyBtn.style.color = '#fff';
+    nearbyBtn.style.border = '1.5px solid var(--accent)';
+    allBtn.className = 'btn btn-outline btn-sm';
+    allBtn.style.background = 'transparent';
+    allBtn.style.color = 'var(--text)';
+    allBtn.style.border = '1.5px solid var(--border)';
+  } else {
+    allBtn.className = 'btn btn-sm';
+    allBtn.style.background = 'var(--accent)';
+    allBtn.style.color = '#fff';
+    allBtn.style.border = '1.5px solid var(--accent)';
+    nearbyBtn.className = 'btn btn-outline btn-sm';
+    nearbyBtn.style.background = 'transparent';
+    nearbyBtn.style.color = 'var(--text)';
+    nearbyBtn.style.border = '1.5px solid var(--border)';
+  }
 }
 
 function closeLocationPicker() {
@@ -1132,6 +1176,12 @@ function getLocationDisplayList() {
     // Sort by distance if GPS available, else alphabetical
     if (currentGPS) {
       items.sort((a, b) => a.dist - b.dist);
+      // Apply radius filter
+      if (locationRadius === 'nearby') {
+        const nearby = items.filter(i => i.dist <= NEARBY_MILES);
+        if (nearby.length > 0) return nearby;
+        // If nothing within radius, show all with a note
+      }
     } else {
       items.sort((a, b) => a.name.localeCompare(b.name));
     }
@@ -1150,6 +1200,13 @@ function filterLocationPicker() {
       const hay = (item.name + ' ' + item.type).toLowerCase();
       return terms.every(t => hay.includes(t));
     });
+  }
+  // Update GPS hint with count
+  const gpsHint = document.getElementById('locationPickerGPSHint');
+  if (currentGPS && selectedForest) {
+    const radiusNote = locationRadius === 'nearby' ? ` within ${NEARBY_MILES} mi` : '';
+    gpsHint.textContent = `${items.length} location${items.length !== 1 ? 's' : ''}${radiusNote} — sorted by distance`;
+    gpsHint.style.display = 'block';
   }
   renderLocationList(items);
 }
