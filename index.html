@@ -596,8 +596,15 @@ if ('serviceWorker' in navigator) {
     <div class="saved-panel-body collapsed" id="savedPanelBody"></div>
   </div>
 
-  <!-- -- FOREST SELECTOR -- -->
+  <!-- -- REGION & FOREST SELECTOR -- -->
   <div class="site-section">
+    <div class="site-section-row" style="margin-bottom:10px;">
+      <label>Region</label>
+      <select id="regionSelect" onchange="onRegionChange()"
+        style="flex:1;padding:10px 14px;background:var(--input-bg);border:1.5px solid var(--border);border-radius:8px;color:var(--text);font-size:15px;-webkit-appearance:none;appearance:none;">
+        <option value="">— All Regions —</option>
+      </select>
+    </div>
     <div class="site-section-row">
       <label>Forest</label>
       <select id="forestSelect" onchange="onForestChange()"
@@ -924,30 +931,91 @@ function init() {
 }
 
 // ============================================================================
-// FOREST LOCATIONS
+// REGION / FOREST DATA
 // ============================================================================
+const REGION_MAP = {
+  'R01 — Northern': ['Beaverhead-Deerlodge National Forest','Bitterroot National Forest','Custer Gallatin National Forest','Dakota Prairie Grasslands','Flathead National Forest','Helena-Lewis and Clark National Forest','Idaho Panhandle National Forests','Kootenai National Forest','Lolo National Forest','Nez Perce-Clearwater National Forests'],
+  'R02 — Rocky Mountain': ['Arapaho and Roosevelt National Forests and Pawnee ','Bighorn National Forest','Black Hills National Forest','Grand Mesa, Uncompahgre & Gunnison National Forest','Medicine Bow-Routt National Forests & Thunder Basi','Nebraska National Forests and Grasslands','Pike-San Isabel National Forests & Cimarron-Comanc','Rio Grande National Forest','San Juan National Forest','Shoshone National Forest','White River National Forest'],
+  'R03 — Southwestern': ['Apache-Sitgreaves National Forest','Carson National Forest','Cibola National Forest','Coconino National Forest','Coronado National Forest','Gila National Forest','Kaibab National Forest','Lincoln National Forest','Prescott National Forest','Santa Fe National Forest','Tonto National Forest'],
+  'R04 — Intermountain': ['Ashley National Forest','Boise National Forest','Bridger-Teton National Forest','Caribou-Targhee National Forest','Dixie National Forest','Fishlake National Forest','Humboldt-Toiyabe National Forest','Manti-Lasal National Forest','Payette National Forest','Salmon-Challis National Forest','Sawtooth National Forest','Uinta-Wasatch-Cache National Forest'],
+  'R05 — Pacific Southwest': ['Angeles National Forest','Cleveland National Forest','Eldorado National Forest','Inyo National Forest','Klamath National Forest','Lake Tahoe Basin Management Unit','Lassen National Forest','Los Padres National Forest','Mendocino National Forest','Modoc National Forest','Plumas National Forest','San Bernardino National Forest','Sequoia National Forest','Shasta-Trinity National Forest','Sierra National Forest','Six Rivers National Forest','Stanislaus National Forest','Tahoe National Forest'],
+  'R06 — Pacific Northwest': ['Columbia River Gorge National Scenic Area','Colville National Forest','Deschutes National Forest','Fremont-Winema National Forest','Gifford Pinchot National Forest','Malheur National Forest','Mt. Baker-Snoqualmie National Forest','Mt. Hood National Forest','Ochoco National Forest','Okanogan-Wenatchee National Forest','Olympic National Forest','Rogue River-Siskiyou National Forest','Siuslaw National Forest','Umatilla National Forest','Umpqua National Forest','Wallowa-Whitman National Forest','Willamette National Forest'],
+  'R08 — Southern': ['Chattahoochee-Oconee National Forest','Cherokee National Forest','Daniel Boone National Forest','El Yunque National Forest','Francis Marion And Sumter National Forests','George Washington & Jefferson National Forests','Kisatchie National Forest','Land Between the Lakes National Recreation Area','National Forests In Alabama','National Forests In Florida','National Forests In Mississippi','National Forests In North Carolina','National Forests In Texas','Ouachita National Forest','Ozark-St. Francis National Forest','Savannah River Site'],
+  'R09 — Eastern': ['Allegheny National Forest','Chequamegon-Nicolet National Forest','Chippewa National Forest','Green Mountain & Finger Lakes National Forests','Hiawatha National Forest','Hoosier National Forest','Huron-Manistee National Forests','Mark Twain National Forest','Midewin National Tallgrass Prairie','Monongahela National Forest','Ottawa National Forest','Shawnee National Forest','Superior National Forest','Wayne National Forest','White Mountain National Forest'],
+  'R10 — Alaska': ['Chugach National Forest','Tongass National Forest']
+};
+
+// Reverse lookup: forest name -> region label
+const FOREST_TO_REGION = {};
+for (const [region, forests] of Object.entries(REGION_MAP)) {
+  for (const f of forests) FOREST_TO_REGION[f] = region;
+}
+
 async function loadForestData() {
   try {
     const resp = await fetch('./forest_locations.json');
     if (!resp.ok) throw new Error('fetch failed');
     forestData = await resp.json();
-    const sel = document.getElementById('forestSelect');
-    const names = Object.keys(forestData).sort();
-    names.forEach(f => {
+
+    // Populate region dropdown
+    const regSel = document.getElementById('regionSelect');
+    Object.keys(REGION_MAP).forEach(r => {
       const opt = document.createElement('option');
-      opt.value = f;
-      opt.textContent = `${f} (${forestData[f].length})`;
-      sel.appendChild(opt);
+      opt.value = r;
+      opt.textContent = `${r} (${REGION_MAP[r].length} forests)`;
+      regSel.appendChild(opt);
     });
-    // Restore saved forest
-    const saved = localStorage.getItem(LS_FOREST);
-    if (saved && forestData[saved]) {
-      sel.value = saved;
+
+    // Populate forest dropdown (all forests initially)
+    populateForestDropdown('');
+
+    // Restore saved region + forest
+    const savedForest = localStorage.getItem(LS_FOREST);
+    if (savedForest && forestData[savedForest]) {
+      const savedRegion = FOREST_TO_REGION[savedForest] || '';
+      if (savedRegion) {
+        regSel.value = savedRegion;
+        populateForestDropdown(savedRegion);
+      }
+      document.getElementById('forestSelect').value = savedForest;
       onForestChange(true);
     }
-    console.log(`Loaded ${names.length} forests, ${Object.values(forestData).reduce((a, b) => a + b.length, 0)} locations`);
+    console.log(`Loaded ${Object.keys(forestData).length} forests, ${Object.values(forestData).reduce((a, b) => a + b.length, 0)} locations`);
   } catch (e) {
     console.warn('Could not load forest_locations.json:', e);
+  }
+}
+
+function populateForestDropdown(regionFilter) {
+  const sel = document.getElementById('forestSelect');
+  const current = sel.value;
+  sel.innerHTML = '<option value="">— Select Forest —</option>';
+
+  let names;
+  if (regionFilter && REGION_MAP[regionFilter]) {
+    names = REGION_MAP[regionFilter].filter(f => forestData[f]);
+  } else {
+    names = Object.keys(forestData).sort();
+  }
+
+  names.forEach(f => {
+    const opt = document.createElement('option');
+    opt.value = f;
+    opt.textContent = `${f} (${forestData[f].length})`;
+    sel.appendChild(opt);
+  });
+
+  // Restore selection if still in list
+  if (current && names.includes(current)) sel.value = current;
+}
+
+function onRegionChange() {
+  const region = document.getElementById('regionSelect').value;
+  populateForestDropdown(region);
+  // If the current forest isn't in this region, clear it
+  const forestSel = document.getElementById('forestSelect');
+  if (!forestSel.value) {
+    onForestChange(false);
   }
 }
 
@@ -974,6 +1042,32 @@ function onForestChange(silent) {
   }
   populateSiteDatalist();
   autoSaveCurrent();
+}
+
+// Auto-detect forest from GPS: find nearest forest by checking nearest location across all forests
+function autoDetectForest() {
+  if (!currentGPS || Object.keys(forestData).length === 0) return;
+  // Skip if forest already selected
+  if (selectedForest) return;
+
+  let bestDist = Infinity, bestForest = null;
+  for (const [fname, locs] of Object.entries(forestData)) {
+    for (const l of locs) {
+      const d = haversineMi(currentGPS.latitude, currentGPS.longitude, l.lat, l.lng);
+      if (d < bestDist) { bestDist = d; bestForest = fname; }
+    }
+  }
+  if (bestForest && bestDist < 100) {
+    // Set region
+    const region = FOREST_TO_REGION[bestForest] || '';
+    if (region) {
+      document.getElementById('regionSelect').value = region;
+      populateForestDropdown(region);
+    }
+    document.getElementById('forestSelect').value = bestForest;
+    onForestChange(false);
+    showToast(`Auto-detected: ${bestForest}`);
+  }
 }
 
 // ============================================================================
@@ -2085,6 +2179,7 @@ function captureGPS(silent) {
         const acc = Math.round(pos.coords.accuracy);
         currentGPS = { latitude: lat, longitude: lon, accuracy: acc };
         updateGPSDisplay();
+        autoDetectForest();
         autoSuggestLocation();
         autoSaveCurrent();
         resolve(currentGPS);
