@@ -2199,7 +2199,21 @@ async function runExport() {
   ];
   const photoCols = Array.from({length: maxPhotos}, () => ({wch:14}));
   const ws = XLSX.utils.aoa_to_sheet(aoa);
-  ws['!cols'] = [{wch:8},{wch:30},{wch:14},{wch:14},{wch:16},{wch:20},{wch:50},{wch:10},{wch:20},{wch:20},...photoCols];
+  // Columns: Entry#(0), Location(1), Lat(2), Lon(3), Accuracy(4), Protocol(5), Citation(6), Score(7), Description(8), Timestamp(9), Photos(10+)
+  const hiddenPhotoCols = Array.from({length: maxPhotos}, () => ({wch:14, hidden:true}));
+  ws['!cols'] = [
+    {wch:8,  hidden:true},  // Entry #
+    {wch:30},               // Location
+    {wch:14, hidden:true},  // Latitude
+    {wch:14, hidden:true},  // Longitude
+    {wch:16, hidden:true},  // GPS Accuracy
+    {wch:20},               // Protocol Area
+    {wch:50},               // Team Guide Citation
+    {wch:10},               // Score
+    {wch:40},               // Description
+    {wch:20},               // Timestamp
+    ...hiddenPhotoCols      // Photo columns
+  ];
   const wb = XLSX.utils.book_new();
   XLSX.utils.book_append_sheet(wb, ws, 'USFS Entries');
   zip.file('USFS_Report_' + datestamp() + '.xlsx', XLSX.write(wb, {bookType:'xlsx',type:'array'}));
