@@ -744,10 +744,10 @@ if ('serviceWorker' in navigator) {
         <option value="Hazardous Waste">Hazardous Waste</option>
         <option value="Materials Management">Materials Management</option>
         <option value="Noise & Radiation">Noise &amp; Radiation</option>
-        <option value="Oil Operations">Oil Operations</option>
+        <option value="Petroleum, Oil and Lubricants">Petroleum, Oil and Lubricants</option>
         <option value="Pesticide Management">Pesticide Management</option>
         <option value="Pollution Prevention">Pollution Prevention</option>
-        <option value="Storage Operations">Storage Operations</option>
+        <option value="Solid Waste">Solid Waste</option>
         <option value="Stormwater">Stormwater</option>
         <option value="Tanks & Transportation">Tanks &amp; Transportation</option>
         <option value="Wastewater">Wastewater</option>
@@ -2650,17 +2650,41 @@ const COMMON_CITATIONS = [
   ]},
 ];
 
+// Map Protocol Area values to which cheat sheet categories to show
+const PROTOCOL_TO_CATEGORIES = {
+  'Hazardous Waste':                ['Hazardous Waste'],
+  'Hazardous Materials':            ['Hazardous Materials', 'HazCom'],
+  'Petroleum, Oil and Lubricants':  ['Used Oil / SPCC / POL'],
+  'Solid Waste':                    ['Solid Waste'],
+  'Wastewater':                     ['Wastewater'],
+  'FS: Wastewater':                 ['Wastewater'],
+  'Water Quality':                  ['Water Quality'],
+  'FS: Water Quality':              ['Water Quality'],
+};
+
 function showCommonCitations() {
   loadCitations(); // ensure full citations loaded for lookup
+  const proto = document.getElementById('protocolArea').value;
+  const allowedCats = PROTOCOL_TO_CATEGORIES[proto] || null; // null = show all
+
   const container = document.getElementById('commonCitationsList');
   let html = '';
+  let count = 0;
   for (const group of COMMON_CITATIONS) {
+    if (allowedCats && !allowedCats.includes(group.cat)) continue;
     html += `<div class="cc-category">${group.cat}</div>`;
     for (const item of group.items) {
       html += `<div class="cc-item" onclick="pickCommonCitation('${item.code}')">` +
         `<span class="cc-code">${item.code}</span>` +
         `<span class="cc-desc">${item.desc}</span></div>`;
+      count++;
     }
+  }
+  if (count === 0) {
+    html = '<div style="padding:20px;text-align:center;color:var(--text-dim);">No common citations for this Protocol Area.<br>Use the search field instead.</div>';
+  }
+  if (proto && allowedCats) {
+    html = `<div style="padding:8px 14px;font-size:12px;color:var(--text-dim);border-bottom:1px solid var(--border);">Filtered for: ${proto}</div>` + html;
   }
   container.innerHTML = html;
   document.getElementById('commonCitationsOverlay').style.display = 'flex';
