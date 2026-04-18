@@ -1,0 +1,12 @@
+{
+  "appId": "com.hgsengineering.usfsphotocollector",
+  "appName": "USFS Photo Collector",
+  "webDir": "www",
+  "server": {
+    "androidScheme": "https"
+  },
+  "ios": {
+    "contentInset": "automatic",
+    "allowsLinkPreview": false
+  }
+}
