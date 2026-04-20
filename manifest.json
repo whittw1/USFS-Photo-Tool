@@ -3,7 +3,7 @@
   "short_name": "USFS Photos",
   "start_url": "./index.html",
   "display": "browser",
-  "background_color": "#1a1f2e",
+  "background_color": "#f4f6fa",
   "theme_color": "#2e7d32",
   "description": "USFS field photo documentation with GPS and location tracking"
 }
