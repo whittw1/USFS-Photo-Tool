@@ -50,8 +50,9 @@ if ('serviceWorker' in navigator) {
 
   /* -- Header -- */
   .header {
-    background: var(--card);
-    border-bottom: 1px solid var(--border);
+    background: linear-gradient(135deg, #1b5e20 0%, #2e7d32 50%, #43a047 100%);
+    border-bottom: 1px solid rgba(0, 0, 0, 0.1);
+    color: #ffffff;
     padding: 12px 20px;
     padding-top: calc(12px + env(safe-area-inset-top, 0px));
     display: flex;
@@ -60,17 +61,37 @@ if ('serviceWorker' in navigator) {
     position: sticky;
     top: 0;
     z-index: 100;
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.08);
   }
-  .header h1 { font-size: 17px; font-weight: 600; letter-spacing: 0.5px; }
+  .header h1 { font-size: 17px; font-weight: 600; letter-spacing: 0.5px; color: #ffffff; }
   .header-actions { display: flex; gap: 8px; }
   .header-badge {
-    background: var(--accent);
-    color: white;
+    background: rgba(255, 255, 255, 0.25);
+    color: #ffffff;
     font-size: 11px;
     font-weight: 700;
     padding: 2px 8px;
     border-radius: 10px;
     margin-left: 8px;
+  }
+  /* Header buttons: translucent white on green */
+  .header .btn-outline {
+    background: rgba(255, 255, 255, 0.15);
+    border: 1.5px solid rgba(255, 255, 255, 0.4);
+    color: #ffffff;
+  }
+  .header .btn-outline:hover {
+    background: rgba(255, 255, 255, 0.25);
+    border-color: rgba(255, 255, 255, 0.7);
+    color: #ffffff;
+  }
+  .header .btn-accent {
+    background: rgba(255, 255, 255, 0.95);
+    color: var(--accent);
+  }
+  .header .btn-accent:hover {
+    background: #ffffff;
+    color: var(--accent-hover);
   }
 
   /* -- Buttons -- */
@@ -550,16 +571,16 @@ if ('serviceWorker' in navigator) {
   /* -- Overflow menu -- */
   .overflow-menu-wrapper { position: relative; display: none; }
   .overflow-btn {
-    background: transparent;
-    border: 1.5px solid var(--border);
-    color: var(--text-dim);
+    background: rgba(255, 255, 255, 0.15);
+    border: 1.5px solid rgba(255, 255, 255, 0.4);
+    color: #ffffff;
     border-radius: 8px;
     padding: 7px 12px;
     font-size: 18px;
     line-height: 1;
     cursor: pointer;
   }
-  .overflow-btn:hover { border-color: var(--text-dim); color: var(--text); }
+  .overflow-btn:hover { background: rgba(255, 255, 255, 0.25); border-color: rgba(255, 255, 255, 0.7); color: #ffffff; }
   .overflow-dropdown {
     display: none;
     position: absolute;
