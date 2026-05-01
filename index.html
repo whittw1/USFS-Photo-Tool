@@ -344,6 +344,7 @@ if ('serviceWorker' in navigator) {
     background: var(--accent);
     color: #fff;
   }
+  .score-btn.hidden { display: none; }
   .form-group label {
     font-size: 12px;
     font-weight: 600;
@@ -805,11 +806,11 @@ if ('serviceWorker' in navigator) {
       <label>Score</label>
       <input type="hidden" id="entryScore" value="">
       <div class="score-buttons">
-        <button type="button" class="score-btn" data-score="Safety" onclick="toggleScore(this)">Safety</button>
+        <button type="button" class="score-btn" data-score="Safety" data-r9-only="true" onclick="toggleScore(this)">Safety</button>
         <button type="button" class="score-btn" data-score="Finding" onclick="toggleScore(this)">Finding</button>
-        <button type="button" class="score-btn" data-score="Observation" onclick="toggleScore(this)">Observation</button>
-        <button type="button" class="score-btn" data-score="Positive" onclick="toggleScore(this)">Positive</button>
-        <button type="button" class="score-btn" data-score="Corrected On Site" onclick="toggleScore(this)">Corrected</button>
+        <button type="button" class="score-btn" data-score="Observation" data-r9-only="true" onclick="toggleScore(this)">Observation</button>
+        <button type="button" class="score-btn" data-score="Positive" data-r9-only="true" onclick="toggleScore(this)">Positive</button>
+        <button type="button" class="score-btn" data-score="Corrected On Site" data-r9-only="true" onclick="toggleScore(this)">Corrected</button>
         <button type="button" class="score-btn" data-score="General" onclick="toggleScore(this)">General</button>
       </div>
     </div>
@@ -1090,6 +1091,7 @@ async function loadForestData() {
       document.getElementById('forestSelect').value = savedForest;
       onForestChange(true);
     }
+    updateScoreVisibility();
     console.log(`Loaded ${Object.keys(forestData).length} forests, ${Object.values(forestData).reduce((a, b) => a + b.length, 0)} locations`);
   } catch (e) {
     console.warn('Could not load forest_locations.json:', e);
@@ -1127,6 +1129,27 @@ function onRegionChange() {
   if (!forestSel.value) {
     onForestChange(false);
   }
+  updateScoreVisibility();
+}
+
+// Show R09-only score buttons (Safety/Observation/Positive/Corrected) only when
+// region is R09 AND a forest is selected. Otherwise hide them and clear any
+// hidden value that was previously chosen.
+function updateScoreVisibility() {
+  const region = document.getElementById('regionSelect').value || '';
+  const forest = document.getElementById('forestSelect').value || '';
+  const showR9 = region.startsWith('R09') && !!forest;
+  document.querySelectorAll('.score-btn[data-r9-only="true"]').forEach(b => {
+    b.classList.toggle('hidden', !showR9);
+  });
+  if (!showR9) {
+    const input = document.getElementById('entryScore');
+    const r9Scores = ['Safety', 'Observation', 'Positive', 'Corrected On Site'];
+    if (r9Scores.includes(input.value)) {
+      setScoreButtons('');
+      autoSaveCurrent();
+    }
+  }
 }
 
 function onForestChange(silent) {
@@ -1151,6 +1174,7 @@ function onForestChange(silent) {
     hint.classList.remove('visible');
   }
   populateSiteDatalist();
+  updateScoreVisibility();
   autoSaveCurrent();
 }
 
