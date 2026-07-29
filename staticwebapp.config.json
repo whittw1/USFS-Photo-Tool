@@ -23,13 +23,13 @@
     {
       "route": "/team_guide_citations.json",
       "headers": {
-        "Cache-Control": "public, max-age=86400"
+        "Cache-Control": "public, no-cache"
       }
     },
     {
       "route": "/forest_locations.json",
       "headers": {
-        "Cache-Control": "public, max-age=86400"
+        "Cache-Control": "public, no-cache"
       }
     }
   ],

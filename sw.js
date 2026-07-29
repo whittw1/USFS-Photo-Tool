@@ -1,4 +1,4 @@
-const CACHE_NAME = 'usfs-collector-v1.10';
+const CACHE_NAME = 'usfs-collector-v1.11';
 const URLS_TO_CACHE = [
   './',
   './index.html',
@@ -8,10 +8,14 @@ const URLS_TO_CACHE = [
   'https://cdnjs.cloudflare.com/ajax/libs/exceljs/4.4.0/exceljs.min.js'
 ];
 
-// Install — cache the app shell
+// Install — cache the app shell.
+// cache:'reload' bypasses the browser HTTP cache, otherwise a stale
+// max-age copy of the JSON data gets baked into the new SW cache.
 self.addEventListener('install', event => {
   event.waitUntil(
-    caches.open(CACHE_NAME).then(cache => cache.addAll(URLS_TO_CACHE))
+    caches.open(CACHE_NAME).then(cache =>
+      cache.addAll(URLS_TO_CACHE.map(u => new Request(u, { cache: 'reload' })))
+    )
   );
   self.skipWaiting();
 });
@@ -36,7 +40,9 @@ self.addEventListener('fetch', event => {
 
   if (isHTML) {
     event.respondWith(
-      fetch(event.request)
+      // cache:'no-cache' forces revalidation with the server (cheap 304 via
+      // ETag) so the HTTP cache's max-age can't serve stale HTML/JSON.
+      fetch(event.request, { cache: 'no-cache' })
         .then(response => {
           const clone = response.clone();
           caches.open(CACHE_NAME).then(cache => cache.put(event.request, clone));
