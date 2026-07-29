@@ -1024,6 +1024,7 @@ const LS_SAVED   = 'usfs_saved';
 const LS_CURRENT = 'usfs_current';
 const LS_PHOTOS  = 'usfs_photo_settings';
 const LS_SITES   = 'usfs_site_list';
+const LS_RECENT_TG = 'usfs_recent_tg';
 const IDB_NAME   = 'usfs_photos_v1';
 
 // ============================================================================
@@ -2824,6 +2825,199 @@ function clearGPS() {
 // ============================================================================
 let tgCitations = [];
 let tgLoaded = false;
+let tgRecent = []; // array of citation codes (most recent first)
+let tgAreaFilter = ''; // '' = all, otherwise prefix like 'HW'
+
+// Areas shown as filter chips (label + prefix). Ordered by usefulness in field audits.
+const TG_AREAS = [
+  { p: 'HW', label: 'Haz Waste' },
+  { p: 'HM', label: 'Haz Mat' },
+  { p: 'PO', label: 'POL/SPCC' },
+  { p: 'ST', label: 'Tanks' },
+  { p: 'SO', label: 'Solid Waste' },
+  { p: 'WA', label: 'Wastewater' },
+  { p: 'WQ', label: 'Water Qual' },
+  { p: 'AE', label: 'Air' },
+  { p: 'PM', label: 'Pesticides' },
+  { p: 'EM', label: 'EMS' },
+  { p: 'CR', label: 'Cultural' },
+  { p: 'NR', label: 'Nat Res' },
+];
+
+// Synonym groups: typing any term in a group will match citations containing any other term.
+// Keep terms lowercase. Multi-word phrases supported.
+const TG_SYNONYM_GROUPS = [
+  ['sds', 'safety data sheet', 'msds'],
+  ['drum', 'container', 'bottle', 'bucket', 'jug'],
+  ['flammable', 'ignitable', 'combustible'],
+  ['90-day', '90 day', 'accumulation start'],
+  ['unlabeled', 'unlabelled', 'no label', 'not labeled', 'missing label'],
+  ['hazcom', 'hazard communication', 'haz com'],
+  ['spcc', 'spill prevention'],
+  ['ust', 'underground storage tank'],
+  ['ast', 'aboveground storage tank', 'above-ground storage tank', 'above ground storage tank'],
+  ['stormwater', 'storm water', 'swppp'],
+  ['eyewash', 'eye wash', 'emergency wash', 'safety shower'],
+  ['used oil', 'waste oil'],
+  ['secondary containment', 'spill containment', 'berm'],
+  ['secondary container', 'satellite container'],
+  ['lbp', 'lead-based paint', 'lead based paint'],
+  ['acm', 'asbestos', 'asbestos-containing material'],
+  ['pcb', 'polychlorinated biphenyl'],
+  ['ods', 'ozone-depleting', 'ozone depleting', 'r-22', 'r22', 'refrigerant'],
+  ['pesticide', 'herbicide', 'insecticide', 'rodenticide'],
+  ['ipm', 'integrated pest management'],
+  ['epcra', 'sara title iii', 'tier ii', 'tier 2'],
+  ['npdes', 'discharge permit'],
+  ['sdwa', 'safe drinking water'],
+  ['neshap', 'national emission standard'],
+  ['fire extinguisher', 'fire suppression'],
+  ['boneyard', 'scrap yard', 'open dump'],
+  ['burn pile', 'burn piles', 'open burn', 'open burning', 'vegetative burn', 'vegetative burning', 'burning vegetation', 'slash burn', 'burn pit', 'outdoor burn', 'outdoor burning'],
+  ['universal waste', 'uw'],
+  ['hvac', 'air conditioning', 'refrigeration'],
+  ['fuel island', 'fuel dispenser', 'gas pump'],
+  ['septic', 'drain field', 'mound system'],
+  ['backflow', 'cross connection', 'cross-connection'],
+];
+
+// Build lookup: term -> [all synonyms in its groups]
+const TG_SYNONYM_MAP = (() => {
+  const m = new Map();
+  for (const grp of TG_SYNONYM_GROUPS) {
+    for (const t of grp) {
+      if (!m.has(t)) m.set(t, new Set());
+      for (const other of grp) m.get(t).add(other);
+    }
+  }
+  return m;
+})();
+
+// Phrase → protocol-area hints (ported from fs-reference-web field_notes.py PHRASE_PROTOCOL_HINTS).
+// When the user query matches the regex, citations whose code starts with `prefix` get +bonus.
+const TG_PROTOCOL_HINTS = [
+  // AE
+  [/r[\s-]?22|refrigerant|ozone.depleting|ods/, 'AE', 15],
+  [/hvac.{0,10}(unit|system|charge)/, 'AE', 10],
+  [/boiler|spray\s+paint|air\s+permit/, 'AE', 10],
+  [/emission|stack\s+test/, 'AE', 12],
+  [/combustion|incinerator/, 'AE', 10],
+  [/class\s+(i|ii)\s+(ods|substance)/, 'AE', 15],
+  [/voc|volatile\s+organic/, 'AE', 12],
+  [/air\s+quality|ambient\s+air/, 'AE', 10],
+  [/opacity|particulate/, 'AE', 10],
+  [/generator.{0,10}(engine|diesel|emergency)/, 'AE', 10],
+  [/burn\s*pile|open\s*burn|outdoor\s*burn|vegetative\s+burn|slash\s+burn|burning\s+vegetation/, 'AE', 15],
+  // CR
+  [/cultural|historic|nhpa|section\s+106/, 'CR', 12],
+  [/archaeological|artifact|nagpra/, 'CR', 15],
+  [/tribal\s+consult|sacred\s+site/, 'CR', 15],
+  [/historic\s+preserv/, 'CR', 12],
+  // EM
+  [/iso\s*14001|\bems\b/, 'EM', 15],
+  [/environmental\s+management\s+system/, 'EM', 15],
+  [/continual\s+improvement/, 'EM', 12],
+  // HM
+  [/hazcom|haz\s*com/, 'HM', 15],
+  [/sds|safety\s+data\s+sheet/, 'HM', 12],
+  [/incompatible\s+(storage|chemical|material)/, 'HM', 15],
+  [/dot\s+standard|dot\s+transport/, 'HM', 12],
+  [/flammable.{0,15}(liquid|storage|cabinet)/, 'HM', 10],
+  [/combustible\s+liquid/, 'HM', 10],
+  [/mobile\s+refuel/, 'HM', 12],
+  [/label(ed|ing)?.{0,10}(container|drum|bottle)/, 'HM', 10],
+  [/(unlabeled|unlabelled|not\s+labeled).{0,15}(container|drum|bottle|bucket)/, 'HM', 18],
+  [/secondary\s+container/, 'HM', 18],
+  [/food\s+grade\s+container/, 'HM', 12],
+  [/fire\s+(extinguisher|suppression|alarm|code)/, 'HM', 10],
+  [/eye\s*wash|shower\s+station|emergency\s+wash/, 'HM', 10],
+  [/tier\s+(ii|2)\s+report/, 'HM', 12],
+  [/epcra|sara\s+title|emergency\s+plan/, 'HM', 12],
+  [/asbestos|acm|abatement/, 'HM', 8],
+  [/lead[\s-]based\s+paint|lbp/, 'HM', 8],
+  [/pcb|polychlorinated/, 'HM', 8],
+  [/radon/, 'HM', 6],
+  [/noise|hearing\s+conservation/, 'HM', 6],
+  // HW
+  [/universal\s+waste/, 'HW', 15],
+  [/hazardous\s+waste\s+determin/, 'HW', 15],
+  [/90[\s-]?day/, 'HW', 12],
+  [/satellite\s+accumulation/, 'HW', 12],
+  [/accumulation\s+start\s+date/, 'HW', 12],
+  [/tsdf|treatment.*storage.*disposal/, 'HW', 12],
+  [/manifest|hazardous\s+waste\s+transport/, 'HW', 12],
+  [/biohazard|medical\s+waste|sharps/, 'HW', 10],
+  [/generator\s+status|sqg|lqg|vsqg/, 'HW', 12],
+  [/waste\s+characteriz/, 'HW', 12],
+  [/surface\s+impoundment/, 'HW', 12],
+  // NR
+  [/nepa|endangered\s+species|wetland/, 'NR', 12],
+  [/threatened\s+species|critical\s+habitat/, 'NR', 12],
+  [/migratory\s+bird|bald\s+eagle/, 'NR', 12],
+  [/wild\s+horse|burro/, 'NR', 10],
+  // PM
+  [/pest\s+(control|management)|ipm|pesticide/, 'PM', 12],
+  [/herbicide|insecticide|rodenticide/, 'PM', 12],
+  [/fumigat|fungicide/, 'PM', 10],
+  [/integrated\s+pest/, 'PM', 15],
+  [/applicator|spray.{0,10}(program|schedule)/, 'PM', 10],
+  // PO
+  [/spcc|spill\s+prevention/, 'PO', 15],
+  [/spcc.{0,20}inspect/, 'PO', 20],
+  [/oil\s+(storage|spill)/, 'PO', 10],
+  [/petroleum/, 'PO', 8],
+  [/secondary\s+containment/, 'PO', 12],
+  [/oil.{0,10}water\s+separator/, 'PO', 12],
+  [/spill\s+kit/, 'PO', 8],
+  [/used\s+oil/, 'PO', 12],
+  [/off[\s-]?specification\s+oil/, 'PO', 15],
+  [/oil\s+burn/, 'PO', 10],
+  // SO
+  [/solid\s+waste/, 'SO', 12],
+  [/bulky\s+waste/, 'SO', 18],
+  [/boneyard|scrap\s+yard|dump/, 'SO', 10],
+  [/recycl|landfill|dumpster/, 'SO', 8],
+  [/tire|metal\s+scrap|debris\s+pile/, 'SO', 10],
+  [/open\s+dump/, 'SO', 15],
+  [/mswlf|municipal\s+solid/, 'SO', 15],
+  [/medical\s+waste.{0,10}(container|label|storage)/, 'SO', 10],
+  [/putrescible|food\s+waste/, 'SO', 10],
+  // ST
+  [/ust|underground\s+storage\s+tank/, 'ST', 15],
+  [/ast|above[\s-]?ground\s+storage\s+tank/, 'ST', 12],
+  [/fuel\s+(tank|storage|island)/, 'ST', 10],
+  [/tank\s+(closure|removal|installation)/, 'ST', 12],
+  [/leak\s+detect|tank\s+integrity/, 'ST', 10],
+  [/cathodic\s+protection/, 'ST', 12],
+  // WA
+  [/waste\s*water|wwtp/, 'WA', 15],
+  [/septic|mound\s+system|drain\s+field/, 'WA', 10],
+  [/lift\s+station|lagoon|treatment\s+plant/, 'WA', 10],
+  [/potw|pretreatment/, 'WA', 12],
+  [/npdes\s+permit/, 'WA', 12],
+  [/effluent|discharge\s+permit/, 'WA', 10],
+  [/sewage|sludge/, 'WA', 10],
+  // WQ
+  [/storm\s*water|swppp/, 'WQ', 15],
+  [/erosion\s+control|sediment/, 'WQ', 10],
+  [/backflow|cross.connection/, 'WQ', 12],
+  [/drinking\s+water|potable/, 'WQ', 12],
+  [/well\s+(abandon|closure|decommission)/, 'WQ', 10],
+  [/sdwa|safe\s+drinking\s+water/, 'WQ', 15],
+  [/class\s+v|injection\s+well|uic/, 'WQ', 15],
+  [/large.capacity.septic/, 'WQ', 25],
+  [/disinfect|chlorinat/, 'WQ', 10],
+  [/coliform|water\s+test|water\s+sample/, 'WQ', 10],
+];
+
+// Direct question-level hints — boost a specific QID when the regex matches.
+const TG_QUESTION_HINTS = [
+  [/large.capacity.septic.*(register|notif)/, 'WQ.114.3', 40],
+  [/large.capacity.septic/, 'WQ.114.3', 30],
+  [/septic.*(class\s+v|injection|uic|register)/, 'WQ.114.3', 30],
+  [/spcc.{0,15}inspect/, 'PO.5.10', 25],
+  [/inspect.{0,15}spcc/, 'PO.5.10', 25],
+];
 
 async function loadCitations() {
   if (tgLoaded) return;
@@ -2837,8 +3031,27 @@ async function loadCitations() {
   }
 }
 
+function loadRecentTg() {
+  try {
+    const s = localStorage.getItem(LS_RECENT_TG);
+    if (s) tgRecent = JSON.parse(s) || [];
+  } catch(e) { tgRecent = []; }
+}
+
+function saveRecentTg() {
+  try { localStorage.setItem(LS_RECENT_TG, JSON.stringify(tgRecent.slice(0, 10))); } catch(e) {}
+}
+
+function pushRecent(code) {
+  tgRecent = tgRecent.filter(c => c !== code);
+  tgRecent.unshift(code);
+  if (tgRecent.length > 10) tgRecent.length = 10;
+  saveRecentTg();
+}
+
 // Load on startup
 loadCitations();
+loadRecentTg();
 
 let tgDebounce = null;
 function filterCitations() {
@@ -2846,58 +3059,171 @@ function filterCitations() {
   tgDebounce = setTimeout(_filterCitations, 150);
 }
 
+// Expand a query term to include its synonyms (or just the term itself if no synonyms).
+// Also handles multi-word phrases by checking the original query.
+function _expandTerm(term, fullQuery) {
+  const variants = new Set([term]);
+  // Single-word synonyms
+  if (TG_SYNONYM_MAP.has(term)) {
+    for (const syn of TG_SYNONYM_MAP.get(term)) variants.add(syn);
+  }
+  // Phrase synonyms — if the full query contains a phrase key
+  for (const [key, set] of TG_SYNONYM_MAP.entries()) {
+    if (key.includes(' ') && fullQuery.includes(key)) {
+      for (const syn of set) variants.add(syn);
+    }
+  }
+  return [...variants];
+}
+
+function _renderChips() {
+  let html = '<div class="tg-chips">';
+  html += `<button type="button" class="tg-chip ${tgAreaFilter === '' ? 'active' : ''}" onclick="setTgAreaFilter('')">All</button>`;
+  for (const a of TG_AREAS) {
+    const active = tgAreaFilter === a.p ? 'active' : '';
+    html += `<button type="button" class="tg-chip ${active}" onclick="setTgAreaFilter('${a.p}')" title="${a.p}">${a.label}</button>`;
+  }
+  html += '</div>';
+  return html;
+}
+
+function setTgAreaFilter(prefix) {
+  tgAreaFilter = prefix || '';
+  _filterCitations();
+  document.getElementById('tgSearch').focus();
+}
+
+// Highlight matched terms in a string. `terms` is an array of lowercase strings.
+function _highlight(s, terms) {
+  if (!s) return '';
+  let safe = esc(s);
+  if (!terms || !terms.length) return safe;
+  // Sort longest first to avoid partial overlaps eating longer matches
+  const sorted = [...new Set(terms)].filter(Boolean).sort((a, b) => b.length - a.length);
+  for (const t of sorted) {
+    if (!t) continue;
+    const re = new RegExp('(' + t.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + ')', 'gi');
+    safe = safe.replace(re, '<mark>$1</mark>');
+  }
+  return safe;
+}
+
+function _renderItem(idx, terms) {
+  const item = tgCitations[idx];
+  return `<div class="tg-item" tabindex="0" onclick="selectCitation(${idx})" onkeydown="if(event.key==='Enter')selectCitation(${idx})">
+    <div><span class="tg-item-code">${_highlight(item.c, terms)}</span><span class="tg-item-section">${esc(item.s)}</span></div>
+    <div class="tg-item-desc">${_highlight(item.d, terms)}</div>
+    ${item.r ? `<div class="tg-item-cite">${_highlight(item.r, terms)}</div>` : ''}
+  </div>`;
+}
+
 function _filterCitations() {
   const query = document.getElementById('tgSearch').value.trim().toLowerCase();
   const resultsDiv = document.getElementById('tgResults');
 
-  if (!query || query.length < 2) {
-    resultsDiv.style.display = 'none';
-    return;
-  }
-
   if (!tgLoaded) {
-    resultsDiv.innerHTML = '<div class="tg-no-results">Loading citations...</div>';
+    resultsDiv.innerHTML = _renderChips() + '<div class="tg-no-results">Loading citations...</div>';
     resultsDiv.style.display = 'block';
     loadCitations().then(() => _filterCitations());
     return;
   }
 
-  const terms = query.split(/\s+/).filter(Boolean);
-  const scored = [];
+  // Empty / very short query → show recent picks (or a hint), plus chips for area browsing.
+  if (!query || query.length < 2) {
+    let body = '';
+    // If an area chip is active, browse that area's citations.
+    if (tgAreaFilter) {
+      const list = [];
+      for (let i = 0; i < tgCitations.length; i++) {
+        if (tgCitations[i].c.split('.')[0] === tgAreaFilter) list.push(i);
+        if (list.length >= 50) break;
+      }
+      body = `<div class="tg-section-header">${esc(tgAreaFilter)} citations (${list.length}${list.length >= 50 ? '+' : ''})</div>`;
+      body += list.map(idx => _renderItem(idx, [])).join('');
+    } else if (tgRecent.length > 0) {
+      const items = [];
+      for (const code of tgRecent) {
+        const idx = tgCitations.findIndex(c => c.c === code);
+        if (idx >= 0) items.push(idx);
+      }
+      if (items.length) {
+        body = '<div class="tg-section-header">Recent picks</div>';
+        body += items.map(idx => _renderItem(idx, [])).join('');
+      }
+    }
+    if (!body) {
+      body = '<div class="tg-no-results">Type 2+ characters to search, or pick an area chip above.</div>';
+    }
+    resultsDiv.innerHTML = _renderChips() + body;
+    resultsDiv.style.display = 'block';
+    return;
+  }
 
+  // Build expanded term sets from the query
+  const rawTerms = query.split(/\s+/).filter(Boolean);
+  const termVariantSets = rawTerms.map(t => _expandTerm(t, query));
+  const allHighlightTerms = [];
+  for (const variants of termVariantSets) for (const v of variants) allHighlightTerms.push(v);
+
+  // Compute area bonuses from protocol hints
+  const areaBonus = {};
+  for (const [re, prefix, bonus] of TG_PROTOCOL_HINTS) {
+    if (re.test(query)) areaBonus[prefix] = (areaBonus[prefix] || 0) + bonus;
+  }
+  // Compute QID bonuses from question hints
+  const qidBonus = {};
+  for (const [re, qid, bonus] of TG_QUESTION_HINTS) {
+    if (re.test(query)) qidBonus[qid] = (qidBonus[qid] || 0) + bonus;
+  }
+
+  const scored = [];
   for (let i = 0; i < tgCitations.length; i++) {
     const item = tgCitations[i];
+    const prefix = item.c.split('.')[0];
+    if (tgAreaFilter && prefix !== tgAreaFilter) continue;
+
     const haystack = (item.c + ' ' + item.s + ' ' + item.d + ' ' + item.r).toLowerCase();
     let match = true;
     let score = 0;
-    for (const term of terms) {
-      if (!haystack.includes(term)) { match = false; break; }
-      // Boost exact code matches
-      if (item.c.toLowerCase().includes(term)) score += 10;
-      // Boost citation matches
-      if (item.r.toLowerCase().includes(term)) score += 5;
-      score += 1;
+
+    // Each query term must be present (in some synonym variant) in haystack
+    for (const variants of termVariantSets) {
+      let hit = false;
+      for (const v of variants) {
+        if (haystack.includes(v)) {
+          hit = true;
+          // Boost code matches and reg-citation matches
+          if (item.c.toLowerCase().includes(v)) score += 10;
+          if (item.r && item.r.toLowerCase().includes(v)) score += 5;
+          score += (v === variants[0] ? 2 : 1); // exact term beats synonym
+          break;
+        }
+      }
+      if (!hit) { match = false; break; }
     }
-    if (match) scored.push({ idx: i, score });
+    if (!match) continue;
+
+    // Apply area + QID bonuses
+    if (areaBonus[prefix]) score += areaBonus[prefix];
+    if (qidBonus[item.c]) score += qidBonus[item.c];
+    // Also boost if the question's base id (strip trailing .US/.FS) matches a QID hint
+    const baseId = item.c.replace(/\.(US|FS)$/, '');
+    if (qidBonus[baseId]) score += qidBonus[baseId];
+
+    scored.push({ idx: i, score });
   }
 
   scored.sort((a, b) => b.score - a.score);
   const top = scored.slice(0, 30);
 
+  let body;
   if (top.length === 0) {
-    resultsDiv.innerHTML = '<div class="tg-no-results">No matching citations found</div>';
-    resultsDiv.style.display = 'block';
-    return;
+    body = `<div class="tg-no-results">No matching citations${tgAreaFilter ? ' in ' + tgAreaFilter : ''}.${tgAreaFilter ? ' Tap "All" to broaden.' : ''}</div>`;
+  } else {
+    body = `<div class="tg-section-header">${top.length} match${top.length === 1 ? '' : 'es'}${tgAreaFilter ? ' · ' + tgAreaFilter + ' only' : ''}</div>`;
+    body += top.map(({ idx }) => _renderItem(idx, allHighlightTerms)).join('');
   }
-
-  resultsDiv.innerHTML = top.map(({ idx }) => {
-    const item = tgCitations[idx];
-    return `<div class="tg-item" tabindex="0" onclick="selectCitation(${idx})" onkeydown="if(event.key==='Enter')selectCitation(${idx})">
-      <div><span class="tg-item-code">${esc(item.c)}</span><span class="tg-item-section">${esc(item.s)}</span></div>
-      <div class="tg-item-desc">${esc(item.d)}</div>
-      ${item.r ? `<div class="tg-item-cite">${esc(item.r)}</div>` : ''}
-    </div>`;
-  }).join('');
+  resultsDiv.innerHTML = _renderChips() + body;
   resultsDiv.style.display = 'block';
 }
 
@@ -2914,6 +3240,8 @@ function selectCitation(idx) {
   document.getElementById('teamGuideCitation').value = citText;
   document.getElementById('tgSearch').value = '';
   document.getElementById('tgResults').style.display = 'none';
+
+  pushRecent(item.c);
 
   const sel = document.getElementById('tgSelected');
   sel.innerHTML = `<div style="font-weight:600;color:var(--accent);font-family:monospace;">${esc(item.c)}</div>
