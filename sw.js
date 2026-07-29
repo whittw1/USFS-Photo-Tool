@@ -1,10 +1,11 @@
-const CACHE_NAME = 'usfs-collector-v1.4';
+const CACHE_NAME = 'usfs-collector-v1.9';
 const URLS_TO_CACHE = [
   './',
   './index.html',
   './team_guide_citations.json',
   './forest_locations.json',
-  'https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js'
+  'https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js',
+  'https://cdnjs.cloudflare.com/ajax/libs/exceljs/4.4.0/exceljs.min.js'
 ];
 
 // Install — cache the app shell
