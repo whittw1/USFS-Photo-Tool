@@ -7,7 +7,7 @@
 - **Web (PWA):** Live on Azure Static Web Apps with auto-deploy on push to `main`. Works fully offline after first load via service worker (cache `usfs-collector-v1.11`).
 - **iOS (TestFlight):** Wrapped with Capacitor 8 and shipped to TestFlight — currently marketing version 1.1, build 9. Includes privacy policy page required for App Store review.
 - **Deployed 2026-07-29:** Export improvements (date-range filter, post-export batch delete, ExcelJS styled Findings Report) and the citation-search overhaul (area filter chips, synonym matching, ranking hints, recent picks, match highlighting) are live, along with the expanded 6,445-citation index covering KY/MI/MN/MO/OR/TN/WA state supplements. Also fixed a service-worker caching bug where stale JSON data could survive cache bumps for up to 24 hours.
-- **Pending (uncommitted):** Score-required validation on save (blocks saving entries without a Finding/General score), and the iOS-side changes — app rename to "USFS Photos", encryption-compliance plist key, version/build number records, and updated app icon. These remain local only.
+- **All work committed and deployed** as of 2026-07-29: score-required validation on save is live on the web app, and the iOS-side records (app rename to "USFS Photos", encryption-compliance plist key, version 1.1/build 9, updated icon) are committed. Git matches production.
 
 ## What the App Does
 
@@ -28,7 +28,6 @@ USFS Photo Collector is a single-file Progressive Web App (all HTML/CSS/JS in `i
 
 ## Future Plans / Ideas Discussed
 
-- Commit and deploy the pending score-required validation on save
 - Optionally add Entra ID authentication in front of the Azure public URL
 - Reuse the Azure deployment and TestFlight playbooks (both written up in this repo) for sibling apps, e.g. the DLA Audit Photo Tool
 - Possible switch of the report's photo numbers from 3-digit to 4-digit padding to match filenames (noted, deliberately not done)
