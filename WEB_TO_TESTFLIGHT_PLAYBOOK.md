@@ -284,4 +284,4 @@ Before every TestFlight upload:
 
 ## Reference: the app this was built for
 
-USFS Photo Tool (`com.hgsengineering.usfsphotocollector`) — single-page HTML wrapped by Capacitor 8, currently at version 1.1, build 9. Source lives at `~/Desktop/Claude Apps/USFS-Photo-Tool/`. Used by USFS field auditors to capture geotagged photos + findings, then export a styled XLSX + photo bundle.
+USFS Photo Tool (`com.hgsengineering.usfsphotocollector`) — single-page HTML wrapped by Capacitor 8, currently at version 1.1, build 10. Source lives at `~/Desktop/Claude Apps/USFS-Photo-Tool/`. Used by USFS field auditors to capture geotagged photos + findings, then export a styled XLSX + photo bundle.
