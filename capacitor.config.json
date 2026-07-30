@@ -1,6 +1,6 @@
 {
   "appId": "com.hgsengineering.usfsphotocollector",
-  "appName": "USFS Photo Collector",
+  "appName": "USFS Photos",
   "webDir": "www",
   "server": {
     "androidScheme": "https"
