@@ -4,7 +4,7 @@
 
 ## Status: ✅ Fully Functional (deployed to production, active development ongoing)
 
-- **Web (PWA):** Live on Azure Static Web Apps with auto-deploy on push to `main`. Works fully offline after first load via service worker (cache `usfs-collector-v1.11`).
+- **Web (PWA):** Live at https://salmon-mud-07f7aa310.7.azurestaticapps.net on Azure Static Web Apps, with auto-deploy on push to `main`. Works fully offline after first load via service worker (cache `usfs-collector-v1.11`).
 - **iOS (TestFlight):** Wrapped with Capacitor 8 and shipped to TestFlight — currently marketing version 1.1, build 9. Includes privacy policy page required for App Store review.
 - **Deployed 2026-07-29:** Export improvements (date-range filter, post-export batch delete, ExcelJS styled Findings Report) and the citation-search overhaul (area filter chips, synonym matching, ranking hints, recent picks, match highlighting) are live, along with the expanded 6,445-citation index covering KY/MI/MN/MO/OR/TN/WA state supplements. Also fixed a service-worker caching bug where stale JSON data could survive cache bumps for up to 24 hours.
 - **All work committed and deployed** as of 2026-07-29: score-required validation on save is live on the web app, and the iOS-side records (app rename to "USFS Photos", encryption-compliance plist key, version 1.1/build 9, updated icon) are committed. Git matches production.
