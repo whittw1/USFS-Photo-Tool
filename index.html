@@ -661,6 +661,7 @@ if ('serviceWorker' in navigator) {
       <h1 style="font-size:16px;font-weight:700;letter-spacing:0.3px;">USFS Photo Collector</h1>
     </div>
     <span class="header-badge" id="headerBadge" style="display:none;"></span>
+    <span id="integrityBadge" onclick="runIntegrityCheck(true)" style="display:none;font-size:11px;font-weight:600;margin-left:8px;padding:2px 8px;border-radius:10px;cursor:pointer;" title="Photo storage health. Tap to re-check and list any missing photos."></span>
   </div>
   <div class="header-actions">
     <button class="btn btn-outline btn-sm header-btn-secondary" onclick="showSavedList()">&#128203; List</button>
@@ -1065,6 +1066,11 @@ function init() {
   updateHeaderBadge();
   checkStorage();
   checkPreviousDayEntries();
+
+  // Ask the browser not to evict our storage, migrate any IDB-only photos into
+  // durable filesystem storage, then show the photo-integrity badge.
+  try { if (navigator.storage && navigator.storage.persist) navigator.storage.persist(); } catch(e) {}
+  migratePhotosToFS().then(() => runIntegrityCheck(false));
 
   // Load forest location data, then fall back to imported list
   loadForestData();
@@ -1686,6 +1692,9 @@ function renderSavedPanel() {
           ${e.latitude != null ? `<div style="font-size:10px;color:var(--text-dim);">${e.latitude.toFixed(6)}\u00B0N, ${Math.abs(e.longitude).toFixed(6)}\u00B0${e.longitude < 0 ? 'W' : 'E'}</div>` : ''}
           <div class="saved-item-detail">
             ${photoCount} photo${photoCount !== 1 ? 's' : ''}
+            ${e.exportedAt
+              ? ' \u2022 <span style="color:#4ab86a;font-weight:600;" title="Exported ' + new Date(e.exportedAt).toLocaleString() + '">\u2713 exported</span>'
+              : ' \u2022 <span style="color:#e0a44a;font-weight:700;">\u26a0 not exported</span>'}
             ${e.details ? ' \u2022 ' + e.details.slice(0,60) + (e.details.length > 60 ? '\u2026' : '') : ''}
             ${ts ? ' \u2022 ' + ts : ''}
           </div>
@@ -1710,8 +1719,14 @@ function showSavedList() {
 }
 
 function deleteEntry(index) {
-  const loc = savedEntries[index].location || 'entry';
-  if (confirm(`Delete "${loc}"?`)) {
+  const entry = savedEntries[index];
+  const loc = entry.location || 'entry';
+  const expNote = entry.exportedAt
+    ? `\n\nExported ${new Date(entry.exportedAt).toLocaleString([], { month:'short', day:'numeric', hour:'2-digit', minute:'2-digit' })}.`
+    : '\n\n\u26a0\ufe0f NO export record \u2014 this entry may never have left the device!';
+  if (confirm(`Delete "${loc}"?${expNote}`)) {
+    // Also remove the photo bytes (previously orphaned on single delete)
+    Object.values(entry.photos || {}).forEach(ph => { if (ph && ph.dbKey) deletePhotoFromDB(ph.dbKey); });
     savedEntries.splice(index, 1);
     saveAll();
     renderSavedPanel();
@@ -1995,6 +2010,7 @@ function getPhotoFallback(key) {
 
 function deletePhotoFromDB(key) {
   try { localStorage.removeItem('photo_full_' + key); } catch(e) {}
+  fsDeletePhoto(key); // remove the durable filesystem copy too (fire-and-forget)
   return openPhotoDB().then(db => new Promise(resolve => {
     try {
       const tx = db.transaction('photos','readwrite');
@@ -2009,12 +2025,175 @@ function photoDBKey(entryId, slotId) {
   return entryId.replace(/[^a-zA-Z0-9_-]/g,'_') + '__' + slotId;
 }
 
-function dataUrlToUint8Array(dataUrl) {
-  const b64 = dataUrl.split(',')[1];
-  const bin = atob(b64);
+function base64ToUint8Array(b64) {
+  const bin = atob(b64 || '');
   const out = new Uint8Array(bin.length);
   for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
   return out;
+}
+function dataUrlToUint8Array(dataUrl) {
+  return base64ToUint8Array(String(dataUrl).split(',')[1]);
+}
+// Encode bytes → base64 in chunks (fromCharCode.apply blows the stack ~100KB+).
+function uint8ToBase64(bytes) {
+  let binary = '';
+  const CHUNK = 0x8000;
+  for (let i = 0; i < bytes.length; i += CHUNK) {
+    binary += String.fromCharCode.apply(null, bytes.subarray(i, i + CHUNK));
+  }
+  return btoa(binary);
+}
+function getAllPhotoKeys() {
+  return openPhotoDB().then(db => new Promise(resolve => {
+    try {
+      const req = db.transaction('photos','readonly').objectStore('photos').getAllKeys();
+      req.onsuccess = () => resolve(req.result || []);
+      req.onerror   = () => resolve([]);
+    } catch(e) { resolve([]); }
+  })).catch(() => []);
+}
+
+// ============================================================================
+// DURABLE PHOTO STORAGE  (native filesystem primary; IndexedDB/localStorage fallback)
+// ----------------------------------------------------------------------------
+// iOS can silently EVICT WebView storage (IndexedDB / localStorage) under
+// pressure — how a sibling app lost a day's photos. On the native app we now
+// write each full-res JPEG to a real file in the app's DATA container, which is
+// NOT evicted by WebKit. IDB + localStorage remain fallbacks (and are the store
+// on the plain web build, where Filesystem isn't native).
+// ============================================================================
+function fsPlugin() {
+  const native = !!(window.Capacitor && window.Capacitor.isNativePlatform && window.Capacitor.isNativePlatform());
+  if (!native) return null;
+  return (window.Capacitor.Plugins && window.Capacitor.Plugins.Filesystem) || null;
+}
+function photoFsRelPath(dbKey) {
+  return 'usfs_photos/' + String(dbKey).replace(/[^A-Za-z0-9_.-]/g, '_') + '.jpg';
+}
+async function fsWritePhoto(dbKey, base64) {
+  const FS = fsPlugin(); if (!FS) return false;
+  try { await FS.writeFile({ path: photoFsRelPath(dbKey), data: base64, directory: 'DATA', recursive: true }); return true; }
+  catch (e) { console.error('FS write fail ' + dbKey, e); return false; }
+}
+async function fsReadPhoto(dbKey) {
+  const FS = fsPlugin(); if (!FS) return null;
+  try { const r = await FS.readFile({ path: photoFsRelPath(dbKey), directory: 'DATA' });
+        if (r && r.data) return { bytes: base64ToUint8Array(r.data), type: 'image/jpeg' }; }
+  catch (e) {}
+  return null;
+}
+async function fsPhotoExists(dbKey) {
+  const FS = fsPlugin(); if (!FS) return false;
+  try { const st = await FS.stat({ path: photoFsRelPath(dbKey), directory: 'DATA' }); return !!st && (st.size == null || st.size > 0); }
+  catch (e) { return false; }
+}
+async function fsDeletePhoto(dbKey) {
+  const FS = fsPlugin(); if (!FS) return;
+  try { await FS.deleteFile({ path: photoFsRelPath(dbKey), directory: 'DATA' }); } catch (e) {}
+}
+// Persist bytes durably and CONFIRM. Returns { ok, where }.
+async function storePhotoBytes(dbKey, resizedDataUrl) {
+  const base64 = String(resizedDataUrl).split(',')[1] || '';
+  if (fsPlugin()) {
+    if (await fsWritePhoto(dbKey, base64) && await fsPhotoExists(dbKey)) return { ok: true, where: 'fs' };
+  }
+  if (idbAvailable) {
+    try { await savePhotoToDB(dbKey, base64ToUint8Array(base64).buffer, 'image/jpeg'); return { ok: true, where: 'idb' }; }
+    catch (e) { idbAvailable = false; }
+  }
+  // Last resort only (IDB unavailable/failed) — localStorage is tiny + evictable.
+  savePhotoFallback(dbKey, resizedDataUrl);
+  let ok = false; try { ok = !!localStorage.getItem('photo_full_' + dbKey); } catch (e) {}
+  return { ok, where: ok ? 'fallback' : 'none' };
+}
+async function loadPhotoBytes(dbKey, mimeType) {
+  if (!dbKey) return null;
+  const fs = await fsReadPhoto(dbKey);
+  if (fs) return fs;
+  if (idbAvailable) {
+    try { const r = await getPhotoFromDB(dbKey); if (r && r.data) return { bytes: new Uint8Array(r.data), type: r.type || mimeType || 'image/jpeg' }; }
+    catch (e) {}
+  }
+  const dataUrl = getPhotoFallback(dbKey);
+  if (dataUrl) return { bytes: dataUrlToUint8Array(dataUrl), type: dataUrl.split(';')[0].split(':')[1] || mimeType || 'image/jpeg' };
+  return null;
+}
+async function photoBytesExist(dbKey) {
+  if (!dbKey) return false;
+  if (await fsPhotoExists(dbKey)) return true;
+  if (idbAvailable) { try { const r = await getPhotoFromDB(dbKey); if (r && r.data) return true; } catch (e) {} }
+  try { if (localStorage.getItem('photo_full_' + dbKey)) return true; } catch (e) {}
+  return false;
+}
+async function fsPresentKeySet() {
+  const set = new Set(); const FS = fsPlugin(); if (!FS) return set;
+  try {
+    const r = await FS.readdir({ path: 'usfs_photos', directory: 'DATA' });
+    ((r && r.files) || []).forEach(f => { const n = (typeof f === 'string') ? f : (f && f.name); if (n) set.add(String(n).replace(/\.jpg$/i, '')); });
+  } catch (e) {}
+  return set;
+}
+async function presentPhotoKeySet() {
+  const set = await fsPresentKeySet();
+  if (idbAvailable) { try { (await getAllPhotoKeys()).forEach(k => set.add(k)); } catch (e) {} }
+  try { for (let i = 0; i < localStorage.length; i++) { const k = localStorage.key(i); if (k && k.indexOf('photo_full_') === 0) set.add(k.slice('photo_full_'.length)); } } catch (e) {}
+  return set;
+}
+let _photoMigrationDone = false;
+async function migratePhotosToFS() {
+  if (_photoMigrationDone) return;
+  const FS = fsPlugin();
+  if (!FS || !idbAvailable) { _photoMigrationDone = true; return; }
+  let idbKeys = [];
+  try { idbKeys = await getAllPhotoKeys(); } catch (e) { return; }
+  if (!idbKeys.length) { _photoMigrationDone = true; return; }
+  let fsPresent; try { fsPresent = await fsPresentKeySet(); } catch (e) { fsPresent = new Set(); }
+  const todo = idbKeys.filter(k => !fsPresent.has(k));
+  if (!todo.length) { _photoMigrationDone = true; return; }
+  let moved = 0;
+  for (const key of todo) {
+    try { const r = await getPhotoFromDB(key);
+          if (r && r.data && await fsWritePhoto(key, uint8ToBase64(new Uint8Array(r.data)))) moved++; }
+    catch (e) {}
+  }
+  _photoMigrationDone = true;
+  if (moved) showToast('Secured ' + moved + ' photo' + (moved === 1 ? '' : 's') + ' to durable storage');
+}
+
+// ---- Photo integrity badge ----
+function allReferencedPhotoKeys() {
+  const keys = [];
+  savedEntries.forEach(e => { const ph = e.photos || {}; Object.keys(ph).forEach(s => { if (ph[s] && ph[s].dbKey) keys.push(ph[s].dbKey); }); });
+  Object.keys(currentPhotos).forEach(s => { if (currentPhotos[s] && currentPhotos[s].dbKey) keys.push(currentPhotos[s].dbKey); });
+  return keys;
+}
+function paintIntegrityBadge(total, missing, checking) {
+  const b = document.getElementById('integrityBadge');
+  if (!b) return;
+  b.style.display = 'inline-block';
+  if (checking) { b.style.background = 'rgba(224,164,74,0.9)'; b.style.color = '#fff'; b.textContent = '⏳ Checking…'; return; }
+  if (total === 0) { b.style.display = 'none'; return; }
+  if (missing > 0) { b.style.background = 'rgba(200,40,40,0.95)'; b.style.color = '#fff'; b.textContent = '⚠ ' + missing + ' of ' + total + ' photos MISSING'; }
+  else { b.style.background = 'rgba(74,184,106,0.9)'; b.style.color = '#fff'; b.textContent = '✓ ' + total + ' photo' + (total === 1 ? '' : 's') + ' safe'; }
+}
+async function runIntegrityCheck(verbose) {
+  const uniq = Array.from(new Set(allReferencedPhotoKeys()));
+  paintIntegrityBadge(uniq.length, 0, true);
+  let present; try { present = await presentPhotoKeySet(); } catch (e) { present = new Set(); }
+  const missingKeys = uniq.filter(k => !present.has(k));
+  paintIntegrityBadge(uniq.length, missingKeys.length);
+  if (verbose) {
+    if (!uniq.length) { showToast('No photos to check yet.'); return; }
+    if (!missingKeys.length) { alert('✅ All ' + uniq.length + ' photos are safe in device storage.'); return; }
+    const missSet = new Set(missingKeys); const affected = [];
+    savedEntries.forEach(e => { const ph = e.photos || {}; if (Object.keys(ph).some(s => ph[s] && missSet.has(ph[s].dbKey))) affected.push(e.location || e.siteName || '(unnamed)'); });
+    alert('⚠️ ' + missingKeys.length + ' of ' + uniq.length + ' photos are MISSING from device storage.\n\nAffected entries (' + affected.length + '): ' + (affected.slice(0, 20).join(', ') + (affected.length > 20 ? ', …' : '')) + '\n\nRecover them from an earlier export that still has them.');
+  }
+}
+let _integrityTimer = null;
+function updateIntegrityBadge() {
+  if (_integrityTimer) clearTimeout(_integrityTimer);
+  _integrityTimer = setTimeout(() => { _integrityTimer = null; runIntegrityCheck(false); }, 500);
 }
 
 function handlePhoto(input, slotId) {
@@ -2028,7 +2207,7 @@ function handlePhoto(input, slotId) {
   const reader = new FileReader();
   reader.onload = e => {
     const img = new Image();
-    img.onload = () => {
+    img.onload = async () => {
       let w = img.width, h = img.height;
       if (w > settings.maxWidth || h > settings.maxHeight) {
         const ratio = Math.min(settings.maxWidth / w, settings.maxHeight / h);
@@ -2039,16 +2218,6 @@ function handlePhoto(input, slotId) {
       canvas.width = w; canvas.height = h;
       canvas.getContext('2d').drawImage(img, 0, 0, w, h);
       const dataUrl = canvas.toDataURL('image/jpeg', settings.quality);
-
-      if (idbAvailable) {
-        savePhotoToDB(dbKey, dataUrlToUint8Array(dataUrl).buffer, 'image/jpeg')
-          .catch(() => {
-            idbAvailable = false;
-            savePhotoFallback(dbKey, dataUrl);
-          });
-      } else {
-        savePhotoFallback(dbKey, dataUrl);
-      }
 
       // Thumbnail for UI
       const tc = document.createElement('canvas');
@@ -2062,9 +2231,22 @@ function handlePhoto(input, slotId) {
 
       const container = document.getElementById('photo_' + slotId);
       container.classList.add('has-photo');
-      container.innerHTML = `<img src="${thumbnail}"><span class="retake-badge">Retake</span><span class="saved-badge">\u2713</span>`;
+      container.innerHTML = `<img src="${thumbnail}"><span class="retake-badge">Retake</span><span class="saved-badge" style="background:rgba(224,164,74,0.9);">\u2026</span>`;
+
+      // Persist durably and CONFIRM it stuck; surface failures loudly instead of
+      // silently continuing.
+      const _res = await storePhotoBytes(dbKey, dataUrl);
       const sizeKB = Math.round(dataUrl.length * 0.75 / 1024);
-      showToast(`${PHOTO_SLOT_NAMES[slotId] || 'Photo'} saved (~${sizeKB} KB)`);
+      if (_res.ok) {
+        currentPhotos[slotId].unsaved = false;
+        container.innerHTML = `<img src="${thumbnail}"><span class="retake-badge">Retake</span><span class="saved-badge">\u2713</span>`;
+        showToast(`${PHOTO_SLOT_NAMES[slotId] || 'Photo'} saved (~${sizeKB} KB)`);
+      } else {
+        currentPhotos[slotId].unsaved = true;
+        container.innerHTML = `<img src="${thumbnail}"><span class="retake-badge">Retake</span><span class="saved-badge" style="background:rgba(200,40,40,0.95);">\u26a0 NOT SAVED</span>`;
+        showToast('\u26a0 Photo did NOT save \u2014 storage problem. Export & clear now.', true);
+      }
+      updateIntegrityBadge();
 
       // Auto-capture GPS with each photo
       if (!currentGPS) {
@@ -2379,18 +2561,14 @@ async function runExport() {
   const zip         = new JSZip();
   const photosFolder = zip.folder('photos');
   let photoCount    = 0;
+  let misses        = 0;
+  const missedKeys  = [];
 
   async function getBytes(dbKey, mimeType) {
-    if (idbAvailable && dbKey) {
-      try {
-        const r = await getPhotoFromDB(dbKey);
-        if (r && r.data) return { bytes: new Uint8Array(r.data), type: r.type || mimeType };
-      } catch(e) {}
-    }
-    const fallback = getPhotoFallback(dbKey);
-    if (fallback) {
-      return { bytes: dataUrlToUint8Array(fallback), type: fallback.split(';')[0].split(':')[1] || mimeType };
-    }
+    const r = await loadPhotoBytes(dbKey, mimeType);
+    if (r) return r;
+    misses++;
+    if (dbKey) missedKeys.push(dbKey);
     return null;
   }
 
@@ -2622,13 +2800,34 @@ async function runExport() {
   zip.file('USFS_Report_' + datestamp() + '.xlsx', xlsxBuf);
   zip.file('USFS_Data_'   + datestamp() + '.csv', csv);
 
+  // ---- INTEGRITY GUARD: never silently ship a short export ----
+  if (misses > 0) {
+    const missSet = new Set(missedKeys);
+    const affected = [];
+    allEntries.forEach(e => { const ph = e.photos || {}; if (Object.keys(ph).some(s => ph[s] && missSet.has(ph[s].dbKey))) affected.push(e.location || e.siteName || '(unnamed)'); });
+    const proceed = confirm('⚠️ ' + misses + ' photo(s) could NOT be found and will be MISSING from this export.\n\n' +
+      'Affected entries (' + affected.length + '): ' + (affected.slice(0, 12).join(', ') + (affected.length > 12 ? ', …' : '')) + '\n\n' +
+      'Those full-res photos are not in device storage. Do NOT rely on this export for them.\n\n' +
+      'OK = export anyway (incomplete)\nCancel = stop, keep everything on the device');
+    if (!proceed) { showToast('Export cancelled — ' + misses + ' photos missing', true); return; }
+  }
+
   try {
     const blob = await zip.generateAsync({ type: 'blob' });
     await shareOrDownload(blob, 'USFS_Export_' + datestamp() + '.zip');
-    showToast(`Exported ${allEntries.length} entries, ${photoCount} photos`);
+    showToast(`Exported ${allEntries.length} entries, ${photoCount} photos${misses ? ' (⚠ ' + misses + ' missing)' : ''}`);
 
     // Offer to batch-delete the just-exported entries from this device.
     const exportedIds = allEntries.map(e => e.id).filter(Boolean);
+
+    // Stamp the live entries (allEntries are clones — match by id) so the
+    // saved list can show which entries have an export record.
+    const stampAt = new Date().toISOString();
+    const stampSet = new Set(exportedIds);
+    savedEntries.forEach(en => { if (stampSet.has(en.id)) en.exportedAt = stampAt; });
+    saveAll();
+    renderSavedPanel();
+
     if (exportedIds.length > 0) showPostExportPrompt(exportedIds);
 
     // Clean up localStorage fallback copies
