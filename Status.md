@@ -1,13 +1,14 @@
 # USFS Photo Collector — Status
 
-**Last updated:** 2026-07-29
+**Last updated:** 2026-08-09
 
 ## Status: ✅ Fully Functional (deployed to production, active development ongoing)
 
-- **Web (PWA):** Live at https://salmon-mud-07f7aa310.7.azurestaticapps.net on Azure Static Web Apps, with auto-deploy on push to `main`. Works fully offline after first load via service worker (cache `usfs-collector-v1.11`).
+- **Web (PWA):** Live at https://salmon-mud-07f7aa310.7.azurestaticapps.net on Azure Static Web Apps, with auto-deploy on push to `main`. Works fully offline after first load via service worker (cache `usfs-collector-v1.12`).
 - **iOS (TestFlight):** Wrapped with Capacitor 8 and shipped to TestFlight — currently marketing version 1.1, build 10 (uploaded 2026-07-30, carries all of the 2026-07-29 web improvements). Includes privacy policy page required for App Store review.
 - **Deployed 2026-07-29:** Export improvements (date-range filter, post-export batch delete, ExcelJS styled Findings Report) and the citation-search overhaul (area filter chips, synonym matching, ranking hints, recent picks, match highlighting) are live, along with the expanded 6,445-citation index covering KY/MI/MN/MO/OR/TN/WA state supplements. Also fixed a service-worker caching bug where stale JSON data could survive cache bumps for up to 24 hours.
-- **All work committed and deployed** as of 2026-07-29: score-required validation on save is live on the web app, and the iOS-side records (app rename to "USFS Photos", encryption-compliance plist key, version 1.1/build 9, updated icon) are committed. Git matches production.
+- **Deployed 2026-08-09 (committed 2026-08-04):** Durable photo storage + integrity safeguards + export tracking. Full-res photos now write to the native app filesystem (Capacitor Filesystem, DATA dir) instead of relying only on IndexedDB/localStorage, which iOS can silently evict; existing IndexedDB photos migrate on launch and the app requests persistent storage. Capture now verifies the save stuck (red "NOT SAVED" badge + toast on failure), a header integrity badge shows "N photos safe" / "X of N missing", and export blocks with a warning if any photo can't be found rather than silently shipping a short ZIP. Entries are stamped `exportedAt` on export, the saved list shows green "exported" / amber "not exported" per entry, delete confirm shows export status, and single-entry delete now also removes the photo bytes (was orphaning). Bumps cache to `usfs-collector-v1.12` and iOS build to 11 (marketing version still 1.1). Adds `@capacitor/filesystem`.
+- **Git matches production (web)** as of 2026-08-09: the durable-storage commit is pushed and the Azure auto-deploy has run, so the web app serves cache v1.12. **TestFlight is still on build 10** — iOS build 11 carries the same code but needs an Xcode archive/upload per this repo's TestFlight playbook.
 
 ## What the App Does
 
@@ -23,6 +24,7 @@ USFS Photo Collector is a single-file Progressive Web App (all HTML/CSS/JS in `i
 - GPS auto-capture on first photo, color-coded accuracy
 - ZIP export: named photos + CSV + styled XLSX Findings Report (photo-number ranges)
 - Date-range export filter and post-export batch delete (live as of 2026-07-29)
+- Durable native-filesystem photo storage with save verification, header integrity badge, export blocking on missing photos, and per-entry exported/not-exported tracking (deployed to web 2026-08-09; TestFlight upload of build 11 still pending)
 - Storage usage bar with warning thresholds; JSON backup/restore
 - HGS Portal light theme with FS green gradient header
 
