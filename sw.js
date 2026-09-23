@@ -1,7 +1,8 @@
-const CACHE_NAME = 'usfs-collector-v1.13';
+const CACHE_NAME = 'usfs-collector-v1.14';
 const URLS_TO_CACHE = [
   './',
   './index.html',
+  './manifest.json',
   './team_guide_citations.json',
   './forest_locations.json',
   'https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js',
@@ -44,6 +45,11 @@ self.addEventListener('fetch', event => {
       // ETag) so the HTTP cache's max-age can't serve stale HTML/JSON.
       fetch(event.request, { cache: 'no-cache' })
         .then(response => {
+          // Never replace a good cached copy with an error page or a redirect
+          // (e.g. a Wi-Fi login portal) — serve the cached copy instead.
+          if (!response.ok || response.redirected) {
+            return caches.match(event.request).then(cached => cached || response);
+          }
           const clone = response.clone();
           caches.open(CACHE_NAME).then(cache => cache.put(event.request, clone));
           return response;

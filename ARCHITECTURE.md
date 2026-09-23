@@ -1,6 +1,6 @@
 # USFS Photo Collector — Architecture
 
-**Document date:** 2026-09-10, updated 2026-09-23 · reflects service-worker cache `v1.13`, iOS marketing version 1.1 (build 11 committed; a local bump to 12 was in progress).
+**Document date:** 2026-09-10, updated 2026-09-23 · reflects service-worker cache `v1.14`, iOS marketing version 1.1 (build 11 committed; a local bump to 12 was in progress).
 
 This is the deep-dive technical reference. Companion documents:
 - [README.md](README.md) — feature overview and function index (partially stale; this document supersedes it where they disagree)
@@ -148,7 +148,7 @@ Key details:
 - `photos[slot].unsaved === true` means the durable write **failed verification** at capture time (§7).
 - **Score is mandatory**: `saveEntryAndNew()` and `saveEdit()` both refuse with a toast until a score button is selected.
 - **Saves are confirmed**: `saveAll()` returns false when localStorage is full; Save & New then rolls the entry back out of memory and Save Edit restores the previous version, both keeping the form intact and showing an alert — the app never shows "✔ Saved" for data that didn't persist.
-- **Edit mode tracks its entry by object, not position**: `editingIndex` is recomputed after any deletion (`deleteEntry`, post-export delete), and deleting the entry being edited exits edit mode.
+- **Edit mode tracks its entry by object, not position**: `editingIndex` is recomputed after any deletion (`deleteEntry`, post-export delete), and deleting the entry being edited exits edit mode. Edit mode also survives a reload: the draft's `currentEntryId` only matches a saved entry's id while that entry is being edited, so `loadAll()` resumes edit mode when it finds a match (otherwise Save & New would create a duplicate with the same id and photo keys).
 - Scores: `Finding` and `General` always; `Safety`, `Observation`, `Positive`, `Corrected On Site` are **Region 9-only** buttons, shown by `updateScoreVisibility()` only when the selected region starts with `R09` *and* a forest is chosen. De-selecting R9 clears any hidden R9 score already picked.
 
 ### Complete on-device key inventory
@@ -233,7 +233,7 @@ GPS-powered behaviors (all use `haversineMi()`, earth radius 3958.8 mi):
 
 ## 9. Team Guide citation search
 
-**Data:** `team_guide_citations.json` — 6,445 records of `{c: code, s: section label, d: description, r: regulatory reference}`. Codes are `AREA.question.sub.JURISDICTION` (e.g. `HW.10.1.US`, `PM.1.1.FS`, `AE.10.1.MI`); jurisdictions are `US` (federal, Dec 2023), `FS` (Forest Service supplement, Sep 2008), and state supplements `KY MI MN MO OR TN WA`. Loaded lazily on startup; fetched again on demand if the first fetch failed.
+**Data:** `team_guide_citations.json` — 6,445 records of `{c: code, s: section label, d: description, r: regulatory reference}`. Codes are `AREA.question.sub.JURISDICTION` (e.g. `HW.10.1.US`, `PM.1.1.FS`, `AE.10.1.MI`); jurisdictions are `US` (federal, Dec 2023), `FS` (Forest Service supplement, Sep 2008), and state supplements `KY MI MN MO OR TN WA`. Loaded lazily on startup; `loadCitations()` returns whether the index is loaded, and rejects non-OK or non-array responses. If a search runs before the data is available, it makes **one** fetch attempt per search and, on failure, says the citations couldn't load and to connect once — it never retries in a loop (it used to, at hundreds of fetches per second while offline).
 
 **Search algorithm** (`_filterCitations`, debounced 150 ms):
 
@@ -255,6 +255,7 @@ Selecting a citation writes `"CODE — regulation"` (or bare code) into the hidd
 3. A second canvas produces the ~80 px thumbnail (JPEG q=0.4) stored inline in the entry.
 4. Bytes go through the verified durable-write path (§7); the slot badge reflects the outcome.
 5. **GPS auto-capture**: if the draft has no fix yet, a silent `captureGPS(true)` fires with each photo (high accuracy, 15 s timeout, no error UI in silent mode).
+6. **Save & New during processing**: if the form moves to another entry before the image has decoded, the photo is dropped with a "retake it" warning rather than landing in the wrong entry. If the entry is saved while the bytes are still being written, the write finishes against the photo record the entry already holds (its `unsaved` flag is updated and re-persisted), and the new blank form is left untouched. A photo whose form was cleared (not saved) mid-write has its bytes deleted.
 
 Photos 1–2 are fixed slots (`p_main`, `p_wide`); "Add Photo" appends `p_extra_N` slots, removable and renumbered live; edit mode and draft-restore both rebuild extra slots from data.
 
@@ -292,17 +293,17 @@ USFS_Data_MMDDYY.csv
 **After a successful export:**
 1. Every exported entry in `savedEntries` is stamped `exportedAt` (the clones exported are matched back by id). The saved list renders a green "✓ exported" or amber "⚠ not exported" badge per entry, and single-entry delete confirms with the entry's export status ("NO export record — this entry may never have left the device!").
 2. The post-export dialog offers to **batch-delete the exported entries** (photos included, all tiers); it exits edit mode/clears the draft if those were part of the export. "Keep on device" declines.
-3. All `photo_full_*` localStorage fallback copies are purged.
+3. Photo bytes (including `photo_full_*` localStorage fallback copies) are removed only when their entries are deleted — through the post-export prompt or a single delete — via `deletePhotoFromDB()`, which clears all three tiers even when IndexedDB is unavailable. (Exports used to purge *every* fallback copy, including photos of entries outside the date filter or kept on the device.)
 
 ## 12. Service worker (`sw.js`)
 
 Small but load-bearing — it has caused more field bugs than any other file.
 
 - `CACHE_NAME = 'usfs-collector-v1.12'` — **must be bumped whenever any cached file changes** (`index.html`, `sw.js` itself, either data JSON). The bump is what makes installed PWAs and the iOS WebView pick up changes.
-- Precache list: `./`, `index.html`, both data JSONs, JSZip, ExcelJS.
+- Precache list: `./`, `index.html`, `manifest.json`, both data JSONs, JSZip, ExcelJS.
 - **Install:** `cache.addAll` with every request created as `new Request(url, {cache:'reload'})`. The `reload` is critical: without it the SW install reads through the **browser HTTP cache**, and a stale `max-age` copy of the data JSON gets baked into the brand-new SW cache — this exact bug shipped day-old citation data in July 2026 despite a cache bump. `skipWaiting()` activates immediately.
 - **Activate:** delete every cache whose name ≠ current, then `clients.claim()`.
-- **Fetch:** requests that are navigations or end in `.html`, `/`, or `.json` are **network-first** — fetched with `{cache:'no-cache'}` (forces conditional revalidation, cheap ETag 304s) — with the response copied into the cache and the cache as offline fallback. Everything else (CDN libs) is cache-first.
+- **Fetch:** requests that are navigations or end in `.html`, `/`, or `.json` are **network-first** — fetched with `{cache:'no-cache'}` (forces conditional revalidation, cheap ETag 304s) — with the response copied into the cache and the cache as offline fallback. Only `ok`, non-redirected responses are cached; an error page or redirect (a deploy-time 404, a Wi-Fi login portal) never replaces a good cached copy — the cached copy is served instead. Everything else (CDN libs) is cache-first.
 
 The Azure config (§13) is the server half of the same fix: the data JSONs are served `public, no-cache` so the client always revalidates; `sw.js`, `index.html`, and `manifest.json` are `no-cache, no-store, must-revalidate`.
 
@@ -326,7 +327,7 @@ Consumes pre-downloaded USFS ArcGIS EDW exports: `offices_raw.json` (`EDW_FSOffi
 
 - All data is client-side; the app makes no network writes anywhere. Exports leave the device only through the user's own share-sheet action.
 - No accounts, no auth, no cookies, no analytics. The public Azure URL serves only the static app.
-- XSS surface: citation search results and the selected-citation card pass text through `esc()`, and the location picker escapes `<` and single quotes. **The saved-entries list does not escape** location, protocol area, citation, score, or description text — a known gap, low risk because that text comes only from the user's own input or backups they import. The app never renders remote content.
+- XSS surface: the saved-entries list, citation search results, and the selected-citation card pass text through `esc()`; the location picker escapes `<` and single quotes. The app never renders remote content.
 - The privacy policy (`privacy.html`) exists to satisfy App Store review; it accurately states data never leaves the device.
 
 ## 16. Known constraints & sharp edges (institutional memory)
@@ -340,7 +341,7 @@ Consumes pre-downloaded USFS ArcGIS EDW exports: `offices_raw.json` (`EDW_FSOffi
 7. **Version bumps are by explicit request only** (team policy) — both the iOS build number and any user-facing version.
 8. **`www/` is generated** — edit root files, run `npm run sync`.
 9. The 3-digit Photos column vs 4-digit filenames in the XLSX report is a deliberate user preference, not a bug.
-10. Storage warnings: bar turns yellow at 40 MB with a throttled toast (≤1/5 min), red at 90% of the 80 MB working limit; `navigator.storage.estimate()` supplements the manual localStorage+IDB tally when it reports more.
+10. Storage warnings measure the **tightest** limit: the ~5 MB localStorage entry store (entries + thumbnails, counted conservatively at 2 bytes/char — usually the one that fills first on iPads, where photos are files) or photo storage against the smaller of the 80 MB working cap and the browser's real quota. Over 50% → yellow + throttled toast (≤1/5 min); over 90% → red. Note the bottom-bar indicator element (`#storageIndicator`) has been hidden by CSS since the initial fork and is never shown — only the toasts are visible.
 
 ## 17. How to extend safely (checklist)
 

@@ -1208,7 +1208,7 @@ function updateScoreVisibility() {
 function onForestChange(silent) {
   const sel = document.getElementById('forestSelect');
   selectedForest = sel.value;
-  localStorage.setItem(LS_FOREST, selectedForest);
+  try { localStorage.setItem(LS_FOREST, selectedForest); } catch(e) {}
 
   const hint = document.getElementById('forestHint');
   if (selectedForest && forestData[selectedForest]) {
@@ -1616,7 +1616,7 @@ function saveEntryAndNew() {
   renderSavedPanel();
   updateHeaderBadge();
 
-  const photoCount = getAllCurrentSlots().filter(s => entry.photos[s]).length;
+  const photoCount = Object.values(entry.photos).filter(Boolean).length;
   showToast(`\u2714 Saved — ${photoCount} photo${photoCount !== 1 ? 's' : ''} \u2022 ${savedEntries.length} total`);
 }
 
@@ -1691,17 +1691,17 @@ function renderSavedPanel() {
           ? `<img class="saved-item-thumb" src="${thumb}">`
           : `<div class="saved-item-thumb-empty">&#128247;</div>`}
         <div class="saved-item-info">
-          <div class="saved-item-name">${e.location || '(No location)'}</div>
-          ${e.protocolArea ? `<div class="saved-item-detail" style="font-size:11px;color:var(--text-dim);">${e.protocolArea}</div>` : ''}
-          ${e.teamGuideCitation ? `<div class="saved-item-detail" style="font-size:11px;color:var(--text-dim);font-style:italic;">TG: ${e.teamGuideCitation}</div>` : ''}
-          ${e.score ? `<div class="saved-item-detail" style="font-size:11px;color:var(--text-dim);">Score: ${e.score}</div>` : ''}
+          <div class="saved-item-name">${esc(e.location || '(No location)')}</div>
+          ${e.protocolArea ? `<div class="saved-item-detail" style="font-size:11px;color:var(--text-dim);">${esc(e.protocolArea)}</div>` : ''}
+          ${e.teamGuideCitation ? `<div class="saved-item-detail" style="font-size:11px;color:var(--text-dim);font-style:italic;">TG: ${esc(e.teamGuideCitation)}</div>` : ''}
+          ${e.score ? `<div class="saved-item-detail" style="font-size:11px;color:var(--text-dim);">Score: ${esc(e.score)}</div>` : ''}
           ${e.latitude != null ? `<div style="font-size:10px;color:var(--text-dim);">${e.latitude.toFixed(6)}\u00B0N, ${Math.abs(e.longitude).toFixed(6)}\u00B0${e.longitude < 0 ? 'W' : 'E'}</div>` : ''}
           <div class="saved-item-detail">
             ${photoCount} photo${photoCount !== 1 ? 's' : ''}
             ${e.exportedAt
               ? ' \u2022 <span style="color:#4ab86a;font-weight:600;" title="Exported ' + new Date(e.exportedAt).toLocaleString() + '">\u2713 exported</span>'
               : ' \u2022 <span style="color:#e0a44a;font-weight:700;">\u26a0 not exported</span>'}
-            ${e.details ? ' \u2022 ' + e.details.slice(0,60) + (e.details.length > 60 ? '\u2026' : '') : ''}
+            ${e.details ? ' \u2022 ' + esc(e.details.slice(0,60)) + (e.details.length > 60 ? '\u2026' : '') : ''}
             ${ts ? ' \u2022 ' + ts : ''}
           </div>
         </div>
@@ -2231,11 +2231,16 @@ function handlePhoto(input, slotId) {
   // While editing, a retake gets its own key so the saved entry's photo survives until Save Edit.
   const dbKey    = photoDBKey(currentEntryId, slotId) + (editingIndex !== null ? '_' + Date.now().toString(36) : '');
   const settings = getPhotoSettings();
+  const entryIdAtCapture = currentEntryId;
 
   const reader = new FileReader();
   reader.onload = e => {
     const img = new Image();
     img.onload = async () => {
+      if (currentEntryId !== entryIdAtCapture) {
+        showToast('⚠ Photo not added — the entry was saved or cleared before it finished. Retake it.', true);
+        return;
+      }
       let w = img.width, h = img.height;
       if (w > settings.maxWidth || h > settings.maxHeight) {
         const ratio = Math.min(settings.maxWidth / w, settings.maxHeight / h);
@@ -2256,7 +2261,8 @@ function handlePhoto(input, slotId) {
       const thumbnail = tc.toDataURL('image/jpeg', 0.4);
 
       const prevKey = currentPhotos[slotId] && currentPhotos[slotId].dbKey;
-      currentPhotos[slotId] = { timestamp: ts, thumbnail, fileType: 'image/jpeg', dbKey };
+      const photo = { timestamp: ts, thumbnail, fileType: 'image/jpeg', dbKey };
+      currentPhotos[slotId] = photo;
 
       const container = document.getElementById('photo_' + slotId);
       container.classList.add('has-photo');
@@ -2266,13 +2272,19 @@ function handlePhoto(input, slotId) {
       // silently continuing.
       const _res = await storePhotoBytes(dbKey, dataUrl);
       const sizeKB = Math.round(dataUrl.length * 0.75 / 1024);
+      photo.unsaved = !_res.ok;
+      if (_res.ok && prevKey && prevKey !== dbKey && !photoKeyInSavedEntries(prevKey)) deletePhotoFromDB(prevKey);
+      if (currentPhotos[slotId] !== photo) {
+        // Saved or cleared mid-write: the form (and this slot's DOM) now belongs to another entry.
+        if (photoKeyInSavedEntries(dbKey)) saveAll(); else deletePhotoFromDB(dbKey);
+        if (!_res.ok) showToast('⚠ A photo did NOT save — storage problem. Export & clear now.', true);
+        updateIntegrityBadge();
+        return;
+      }
       if (_res.ok) {
-        if (prevKey && prevKey !== dbKey && !photoKeyInSavedEntries(prevKey)) deletePhotoFromDB(prevKey);
-        currentPhotos[slotId].unsaved = false;
         container.innerHTML = `<img src="${thumbnail}"><span class="retake-badge">Retake</span><span class="saved-badge">\u2713</span>`;
         showToast(`${PHOTO_SLOT_NAMES[slotId] || 'Photo'} saved (~${sizeKB} KB)`);
       } else {
-        currentPhotos[slotId].unsaved = true;
         container.innerHTML = `<img src="${thumbnail}"><span class="retake-badge">Retake</span><span class="saved-badge" style="background:rgba(200,40,40,0.95);">\u26a0 NOT SAVED</span>`;
         showToast('\u26a0 Photo did NOT save \u2014 storage problem. Export & clear now.', true);
       }
@@ -2344,7 +2356,8 @@ function savePhotoSettings() {
     quality:   (parseInt(document.getElementById('photoQuality').value) || 80) / 100,
     preset: p
   };
-  localStorage.setItem(LS_PHOTOS, JSON.stringify(s));
+  try { localStorage.setItem(LS_PHOTOS, JSON.stringify(s)); }
+  catch(e) { showToast('Storage full — settings not saved', true); return; }
   document.getElementById('settingsOverlay').style.display = 'none';
   showToast('Photo settings saved');
 }
@@ -2432,11 +2445,9 @@ async function deleteExportedEntries() {
     clearEntryForm(false);
   }
   saveAll();
-  // Best-effort photo cleanup from IDB
-  if (idbAvailable) {
-    for (const k of dbKeys) {
-      try { await deletePhotoFromDB(k); } catch(e) {}
-    }
+  // Best-effort photo cleanup from every storage tier
+  for (const k of dbKeys) {
+    try { await deletePhotoFromDB(k); } catch(e) {}
   }
   renderSavedPanel();
   updateHeaderBadge();
@@ -2872,16 +2883,6 @@ async function runExport() {
     renderSavedPanel();
 
     if (exportedIds.length > 0) showPostExportPrompt(exportedIds);
-
-    // Clean up localStorage fallback copies
-    try {
-      const fallbackKeys = [];
-      for (let i = 0; i < localStorage.length; i++) {
-        const k = localStorage.key(i);
-        if (k && k.startsWith('photo_full_')) fallbackKeys.push(k);
-      }
-      fallbackKeys.forEach(k => localStorage.removeItem(k));
-    } catch(e) {}
   } catch(e) {
     console.error('Export error:', e);
     showToast('Export error \u2014 try again', true);
@@ -3290,15 +3291,19 @@ const TG_QUESTION_HINTS = [
 ];
 
 async function loadCitations() {
-  if (tgLoaded) return;
+  if (tgLoaded) return true;
   try {
     const resp = await fetch('./team_guide_citations.json');
-    tgCitations = await resp.json();
+    if (!resp.ok) throw new Error('HTTP ' + resp.status);
+    const data = await resp.json();
+    if (!Array.isArray(data)) throw new Error('unexpected format');
+    tgCitations = data;
     tgLoaded = true;
     console.log(`Loaded ${tgCitations.length} Team Guide citations`);
   } catch(e) {
     console.warn('Could not load citations:', e);
   }
+  return tgLoaded;
 }
 
 function loadRecentTg() {
@@ -3394,7 +3399,10 @@ function _filterCitations() {
   if (!tgLoaded) {
     resultsDiv.innerHTML = _renderChips() + '<div class="tg-no-results">Loading citations...</div>';
     resultsDiv.style.display = 'block';
-    loadCitations().then(() => _filterCitations());
+    loadCitations().then(ok => {
+      if (ok) _filterCitations();
+      else resultsDiv.innerHTML = '<div class="tg-no-results">Citations couldn’t load. Connect to the internet once so they can download, then search again.</div>';
+    });
     return;
   }
 
@@ -3722,6 +3730,10 @@ function loadAll() {
     currentPhotos  = state.currentPhotos  || {};
     currentEntryId = state.currentEntryId || genId();
     currentGPS     = state.currentGPS    || null;
+    // The draft only shares a saved entry's id while that entry is being edited: resume edit
+    // mode, otherwise Save & New would add a duplicate of it.
+    const editIdx = savedEntries.findIndex(e => e.id === currentEntryId);
+    if (editIdx >= 0) { editingIndex = editIdx; setEditModeUI(true, savedEntries[editIdx].location || 'entry'); }
     updateGPSDisplay();
 
     // Restore any extra photo slots
@@ -3774,18 +3786,19 @@ function loadAll() {
   } catch(e) {}
 }
 
-const STORAGE_WARN_MB = 40;
-const STORAGE_LIMIT_MB = 80;
+const STORAGE_LIMIT_MB = 80;   // working cap for web photo storage (IndexedDB)
+// WebKit caps localStorage (entries + thumbnails) near 5 MB; counting 2 bytes/char is conservative.
+// On the iPad app photos live in files, so this is usually the limit that fills first.
+const LS_LIMIT_MB = 5;
 let lastStorageWarnShown = 0;
 
 async function checkStorage() {
   try {
-    // Estimate localStorage usage
+    // Estimate localStorage usage (the quota covers every key on this origin)
     let lsBytes = 0;
     for (let i = 0; i < localStorage.length; i++) {
       const k = localStorage.key(i);
-      if (k && (k.startsWith('usfs_') || k.startsWith('photo_full_')))
-        lsBytes += localStorage.getItem(k).length * 2;
+      if (k) lsBytes += (k.length + localStorage.getItem(k).length) * 2;
     }
 
     // Estimate IndexedDB photo usage
@@ -3807,27 +3820,31 @@ async function checkStorage() {
       } catch(e) {}
     }
 
-    const usedMB = totalUsed / (1024 * 1024);
-    const pct = Math.min(100, Math.round(usedMB / STORAGE_LIMIT_MB * 100));
+    const MB = 1024 * 1024;
+    const usedMB = totalUsed / MB;
+    // Fullness of whichever limit is tightest: the entry store, or photo storage vs. the real quota.
+    const photoLimit = Math.min(STORAGE_LIMIT_MB * MB, totalQuota);
+    const pct = Math.min(100, Math.round(Math.max(lsBytes / (LS_LIMIT_MB * MB), totalUsed / photoLimit) * 100));
 
     const bar = document.getElementById('storageBarFill');
     const msg = document.getElementById('storageMsg');
 
     bar.style.width = pct + '%';
-    msg.textContent = usedMB.toFixed(1) + ' MB used';
+    msg.textContent = 'Storage ' + pct + '% full';
+    msg.title = usedMB.toFixed(1) + ' MB used; entry store ' + (lsBytes / MB).toFixed(2) + ' of ' + LS_LIMIT_MB + ' MB';
 
-    if (usedMB >= STORAGE_WARN_MB) {
-      bar.style.background = usedMB >= (STORAGE_LIMIT_MB * 0.9) ? 'var(--danger)' : 'var(--warning)';
-      msg.style.color = usedMB >= (STORAGE_LIMIT_MB * 0.9) ? 'var(--danger)' : 'var(--warning)';
+    if (pct >= 50) {
+      bar.style.background = pct >= 90 ? 'var(--danger)' : 'var(--warning)';
+      msg.style.color = pct >= 90 ? 'var(--danger)' : 'var(--warning)';
 
       // Show toast warning, but not more than once every 5 minutes
       const now = Date.now();
       if (now - lastStorageWarnShown > 5 * 60 * 1000) {
         lastStorageWarnShown = now;
-        if (usedMB >= (STORAGE_LIMIT_MB * 0.9)) {
+        if (pct >= 90) {
           showToast('\u26A0 Storage nearly full \u2014 export & clear entries now!', true);
         } else {
-          showToast('\u26A0 Storage above ' + STORAGE_WARN_MB + ' MB \u2014 consider exporting soon', true);
+          showToast('\u26A0 Storage over half full \u2014 consider exporting soon', true);
         }
       }
     } else {
