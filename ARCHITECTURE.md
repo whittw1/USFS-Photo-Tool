@@ -1,6 +1,6 @@
 # USFS Photo Collector — Architecture
 
-**Document date:** 2026-09-10 · reflects service-worker cache `v1.12`, iOS marketing version 1.1 (build 11 committed; a local bump to 12 was in progress when this was written).
+**Document date:** 2026-09-10, updated 2026-09-23 · reflects service-worker cache `v1.13`, iOS marketing version 1.1 (build 11 committed; a local bump to 12 was in progress).
 
 This is the deep-dive technical reference. Companion documents:
 - [README.md](README.md) — feature overview and function index (partially stale; this document supersedes it where they disagree)
@@ -143,9 +143,12 @@ Module-level variables (the entire runtime state):
 
 Key details:
 - `photos[slot].thumbnail` is an **inline base64 data URL** (~80 px wide, JPEG q=0.4) stored *inside the entry in localStorage* — it's what the saved list and slot previews render without touching the photo stores.
-- `photos[slot].dbKey` is the pointer to the full-resolution bytes: `photoDBKey(entryId, slotId)` = entryId with non-alphanumerics replaced by `_`, then `__`, then the slot id, e.g. `e_1711234567890_a1b2__p_main`. The same key addresses all three storage tiers.
+- `photos[slot].dbKey` is the pointer to the full-resolution bytes: `photoDBKey(entryId, slotId)` = entryId with non-alphanumerics replaced by `_`, then `__`, then the slot id, e.g. `e_1711234567890_a1b2__p_main`. The same key addresses all three storage tiers. **Exception — photos taken while editing** get a unique suffix (`…__p_main_<base36 time>`) so a retake never overwrites the saved entry's photo: **Save Edit** deletes the replaced/removed old photos, **Cancel** deletes the discarded retakes (`discardDraftPhotos()`). Any code that deletes photo bytes must first check `photoKeyInSavedEntries()`.
+- Extra slot ids are `p_extra_<next unused index>` — never the slot count, which collides after a middle slot is removed.
 - `photos[slot].unsaved === true` means the durable write **failed verification** at capture time (§7).
 - **Score is mandatory**: `saveEntryAndNew()` and `saveEdit()` both refuse with a toast until a score button is selected.
+- **Saves are confirmed**: `saveAll()` returns false when localStorage is full; Save & New then rolls the entry back out of memory and Save Edit restores the previous version, both keeping the form intact and showing an alert — the app never shows "✔ Saved" for data that didn't persist.
+- **Edit mode tracks its entry by object, not position**: `editingIndex` is recomputed after any deletion (`deleteEntry`, post-export delete), and deleting the entry being edited exits edit mode.
 - Scores: `Finding` and `General` always; `Safety`, `Observation`, `Positive`, `Corrected On Site` are **Region 9-only** buttons, shown by `updateScoreVisibility()` only when the selected region starts with `R09` *and* a forest is chosen. De-selecting R9 clears any hidden R9 score already picked.
 
 ### Complete on-device key inventory
@@ -169,7 +172,7 @@ Key details:
 
 1. Generate a fresh `currentEntryId`.
 2. Open IndexedDB and run a **write→read→delete probe** with a 4-byte test record; any failure flips `idbAvailable = false` for the session.
-3. `loadAll()` — restore saved entries and the autosaved draft (form fields, GPS, thumbnails, extra photo slots rebuilt into the DOM).
+3. `loadAll()` — restore saved entries and the autosaved draft (form fields, GPS, thumbnails, extra photo slots rebuilt into the DOM). Saved entries are validated: non-object elements are dropped and `repairEntry()` coerces the fields the UI formats (coordinates to numbers or null, text fields to strings, `photos` to an object), so one bad value can't crash startup. If the list is unreadable (bad JSON, or not an array), the raw text is copied to `usfs_saved_damaged_<epoch>` before anything can overwrite it, and the user gets an alert. Imported backups go through the same `repairEntry()` via `normaliseEntry()`.
 4. Render saved panel, header badge, storage bar; queue the previous-day reminder toast (fires at 1.5 s if any entry's timestamp is from an earlier calendar day).
 5. `navigator.storage.persist()` — ask the browser/WebView not to evict our origin's storage (best-effort, wrapped in try/catch).
 6. `migratePhotosToFS()` → then `runIntegrityCheck(false)` (§7).
@@ -259,9 +262,11 @@ Note: going through `<input type=file>` means **iOS strips EXIF and re-encodes**
 
 ## 11. Export pipeline (`runExport`)
 
-**Dialog:** shows the naming preview, a date filter (chips All / Today / Yesterday / Custom with two date inputs, defaulting to today), and a live count "N entries will be exported" / "M of N match this filter". The in-progress draft counts as an entry if it has a location, description, or photos.
+**Dialog:** shows the naming preview, a date filter (chips All / Today / Yesterday / Custom with two date inputs, defaulting to today), and a live count "N entries will be exported" / "M of N match this filter".
 
-**Selection:** deep-clone `savedEntries`, append the draft (with its live form values) if non-empty, then filter by the date range (`entryInRange` on `timestamp`; open-ended bounds allowed). Empty result → abort with a toast.
+**The unsaved-draft rule (`draftIsNewEntry()`):** the form counts as an extra entry only when it is *not* in edit mode and has a description, citation, score, or photo. A location alone doesn't count — Save & New deliberately keeps the location filled in, and counting it used to put a blank phantom row in every export. While editing, the form is an existing saved entry, so the export uses its saved version. The same rule drives export, the export count and preview, backups, and the "unsaved data will be lost" prompt in `editEntry()`.
+
+**Selection:** deep-clone `savedEntries`, append the draft (with its live form values) if `draftIsNewEntry()`, then filter by the date range (`entryInRange` on `timestamp`; open-ended bounds allowed). Empty result → abort with a toast.
 
 **Photo naming:** one **global 4-digit sequence** across the whole export (`0001…`), ordered by entry, then slot (`p_main`, `p_wide`, extras by index). Name = `MMDDYY_District_Location_NNNN` where the location string is split on any of `-> → > – — | /` and the **last two segments** are kept (district + site), each sanitized to `[a-zA-Z0-9_- ]`, spaces→underscores. Extension is `.jpg` unless the stored MIME says PNG.
 
@@ -282,7 +287,7 @@ USFS_Data_MMDDYY.csv
 
 **Integrity guard:** every missing photo (all three storage tiers empty for a referenced dbKey) is counted during the ZIP build; if any are missing, a `confirm()` names the affected entries and forces an explicit choice between "export anyway (incomplete)" and cancel. A short export can never ship silently.
 
-**Delivery:** `shareOrDownload()` — Web Share API with a `File` (native share sheet on iOS; the user typically AirDrops or saves to Files), falling back to an `<a download>` blob click in desktop browsers. Share-sheet cancel (`AbortError`) is treated as done.
+**Delivery:** `shareOrDownload()` — Web Share API with a `File` (native share sheet on iOS; the user typically AirDrops or saves to Files), falling back to an `<a download>` blob click in desktop browsers. It returns **false when the user cancels the share sheet** (`AbortError`); `runExport()` then stops with "Export cancelled — nothing marked as exported", so nothing is stamped as exported or offered for deletion. `saveBackup()` handles cancel the same way. (A download in a desktop browser can't be confirmed, so that path counts as delivered.)
 
 **After a successful export:**
 1. Every exported entry in `savedEntries` is stamped `exportedAt` (the clones exported are matched back by id). The saved list renders a green "✓ exported" or amber "⚠ not exported" badge per entry, and single-entry delete confirms with the entry's export status ("NO export record — this entry may never have left the device!").
@@ -321,7 +326,7 @@ Consumes pre-downloaded USFS ArcGIS EDW exports: `offices_raw.json` (`EDW_FSOffi
 
 - All data is client-side; the app makes no network writes anywhere. Exports leave the device only through the user's own share-sheet action.
 - No accounts, no auth, no cookies, no analytics. The public Azure URL serves only the static app.
-- XSS surface: all interpolated user/citation text passes through `esc()`; location names in picker onclick handlers get quote-escaping. The app never renders remote content.
+- XSS surface: citation search results and the selected-citation card pass text through `esc()`, and the location picker escapes `<` and single quotes. **The saved-entries list does not escape** location, protocol area, citation, score, or description text — a known gap, low risk because that text comes only from the user's own input or backups they import. The app never renders remote content.
 - The privacy policy (`privacy.html`) exists to satisfy App Store review; it accurately states data never leaves the device.
 
 ## 16. Known constraints & sharp edges (institutional memory)
@@ -341,6 +346,7 @@ Consumes pre-downloaded USFS ArcGIS EDW exports: `offices_raw.json` (`EDW_FSOffi
 
 - Editing `index.html`/data JSON → test in a browser (`python3 -m http.server 8080` or the deployed URL), **bump `CACHE_NAME`**, push to `main` (web ships), and note the iOS channel stays behind until the next TestFlight build.
 - New cached asset → add to `URLS_TO_CACHE` *and* bump the cache name *and* (if it must ship in the iOS bundle) add it to package.json's `build` copy list.
-- New entry field → touch all of: the form HTML, `saveEntryAndNew()`, `saveEdit()`, `editEntry()`, `autoSaveCurrent()`/`loadAll()`, `normaliseEntry()`, the CSV row, both XLSX sheets, and the saved-panel renderer.
-- New photo behavior → preserve the verify-after-write contract and the three-tier delete.
+- New entry field → touch all of: the form HTML, `saveEntryAndNew()`, `saveEdit()`, `editEntry()`, `autoSaveCurrent()`/`loadAll()`, `normaliseEntry()`/`repairEntry()`, `draftHasContent()` if the field makes a draft "real", the CSV row, both XLSX sheets, and the saved-panel renderer.
+- New photo behavior → preserve the verify-after-write contract, the three-tier delete, and the edit-mode key suffix; never delete a photo key without `photoKeyInSavedEntries()`.
+- New code that mutates `savedEntries` while edit mode may be active → recompute `editingIndex` from the edited entry object.
 - Anything touching citations/locations data → regenerate via the build scripts, never hand-edit the JSON.

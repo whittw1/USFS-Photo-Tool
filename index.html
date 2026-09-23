@@ -1473,7 +1473,9 @@ function genId() {
 // DYNAMIC PHOTO SLOTS
 // ============================================================================
 function addPhotoSlot() {
-  const slotId = 'p_extra_' + extraPhotoSlots.length;
+  // Next unused index, not the count: slots can be removed from the middle.
+  const nextIdx = extraPhotoSlots.reduce((m, s) => Math.max(m, parseInt(s.replace('p_extra_', ''), 10) + 1), 0);
+  const slotId = 'p_extra_' + nextIdx;
   extraPhotoSlots.push(slotId);
   const num = 2 + extraPhotoSlots.length;
 
@@ -1605,7 +1607,11 @@ function saveEntryAndNew() {
   };
 
   savedEntries.push(entry);
-  saveAll();
+  if (!saveAll()) {
+    savedEntries.pop();
+    alert('⚠️ Entry NOT saved — device storage is full.\n\nYour entry is still in the form. Export now, then delete exported entries to free space.');
+    return;
+  }
   clearEntryForm(false);
   renderSavedPanel();
   updateHeaderBadge();
@@ -1727,7 +1733,12 @@ function deleteEntry(index) {
   if (confirm(`Delete "${loc}"?${expNote}`)) {
     // Also remove the photo bytes (previously orphaned on single delete)
     Object.values(entry.photos || {}).forEach(ph => { if (ph && ph.dbKey) deletePhotoFromDB(ph.dbKey); });
+    const editing = editingIndex !== null ? savedEntries[editingIndex] : null;
     savedEntries.splice(index, 1);
+    if (editing) {
+      editingIndex = savedEntries.indexOf(editing);
+      if (editingIndex === -1) { editingIndex = null; setEditModeUI(false); discardDraftPhotos(); clearEntryForm(false); }
+    }
     saveAll();
     renderSavedPanel();
     updateHeaderBadge();
@@ -1742,11 +1753,10 @@ function editEntry(index) {
   if (editingIndex !== null) {
     if (!confirm('You are already editing an entry. Discard changes?')) return;
   } else {
-    const loc = document.getElementById('siteName').value.trim();
-    const det = document.getElementById('entryDetails').value.trim();
-    if ((loc || det || Object.keys(currentPhotos).length > 0) &&
+    if (draftHasContent() &&
         !confirm('Load saved entry for editing? Current unsaved data will be lost.')) return;
   }
+  discardDraftPhotos();
 
   // Clear extra slots first
   extraPhotoSlots = [];
@@ -1852,6 +1862,7 @@ function saveEdit() {
     return;
   }
 
+  const oldEntry = savedEntries[editingIndex];
   savedEntries[editingIndex] = {
     id:          currentEntryId,
     siteName:    location,
@@ -1863,14 +1874,20 @@ function saveEdit() {
     latitude:    currentGPS ? currentGPS.latitude  : null,
     longitude:   currentGPS ? currentGPS.longitude : null,
     gpsAccuracy: currentGPS ? currentGPS.accuracy  : null,
-    timestamp:   savedEntries[editingIndex].timestamp,
+    timestamp:   oldEntry.timestamp,
     photos:      Object.assign({}, currentPhotos)
   };
 
-  saveAll();
+  if (!saveAll()) {
+    savedEntries[editingIndex] = oldEntry;
+    alert('\u26a0\ufe0f Edit NOT saved \u2014 device storage is full.\n\nYour changes are still in the form. Export and delete other entries to free space, then tap Save Edit again.');
+    return;
+  }
   editingIndex = null;
   setEditModeUI(false);
   clearEntryForm(false);
+  // Photos the edit replaced or removed
+  Object.values(oldEntry.photos || {}).forEach(p => { if (p && p.dbKey && !photoKeyInSavedEntries(p.dbKey)) deletePhotoFromDB(p.dbKey); });
   renderSavedPanel();
   updateHeaderBadge();
   showToast('\u2714 Entry updated');
@@ -1879,6 +1896,7 @@ function saveEdit() {
 function cancelEdit() {
   editingIndex = null;
   setEditModeUI(false);
+  discardDraftPhotos();
   clearEntryForm(false);
   showToast('Edit cancelled');
 }
@@ -2023,6 +2041,15 @@ function deletePhotoFromDB(key) {
 
 function photoDBKey(entryId, slotId) {
   return entryId.replace(/[^a-zA-Z0-9_-]/g,'_') + '__' + slotId;
+}
+
+function photoKeyInSavedEntries(key) {
+  return savedEntries.some(e => Object.values(e.photos || {}).some(p => p && p.dbKey === key));
+}
+
+// Delete the form's photo bytes that no saved entry references (abandoned draft or cancelled retakes).
+function discardDraftPhotos() {
+  Object.values(currentPhotos).forEach(p => { if (p && p.dbKey && !photoKeyInSavedEntries(p.dbKey)) deletePhotoFromDB(p.dbKey); });
 }
 
 function base64ToUint8Array(b64) {
@@ -2201,7 +2228,8 @@ function handlePhoto(input, slotId) {
   if (!file) return;
 
   const ts       = new Date().toISOString();
-  const dbKey    = photoDBKey(currentEntryId, slotId);
+  // While editing, a retake gets its own key so the saved entry's photo survives until Save Edit.
+  const dbKey    = photoDBKey(currentEntryId, slotId) + (editingIndex !== null ? '_' + Date.now().toString(36) : '');
   const settings = getPhotoSettings();
 
   const reader = new FileReader();
@@ -2227,6 +2255,7 @@ function handlePhoto(input, slotId) {
       tc.getContext('2d').drawImage(canvas, 0, 0, tc.width, tc.height);
       const thumbnail = tc.toDataURL('image/jpeg', 0.4);
 
+      const prevKey = currentPhotos[slotId] && currentPhotos[slotId].dbKey;
       currentPhotos[slotId] = { timestamp: ts, thumbnail, fileType: 'image/jpeg', dbKey };
 
       const container = document.getElementById('photo_' + slotId);
@@ -2238,6 +2267,7 @@ function handlePhoto(input, slotId) {
       const _res = await storePhotoBytes(dbKey, dataUrl);
       const sizeKB = Math.round(dataUrl.length * 0.75 / 1024);
       if (_res.ok) {
+        if (prevKey && prevKey !== dbKey && !photoKeyInSavedEntries(prevKey)) deletePhotoFromDB(prevKey);
         currentPhotos[slotId].unsaved = false;
         container.innerHTML = `<img src="${thumbnail}"><span class="retake-badge">Retake</span><span class="saved-badge">\u2713</span>`;
         showToast(`${PHOTO_SLOT_NAMES[slotId] || 'Photo'} saved (~${sizeKB} KB)`);
@@ -2332,11 +2362,21 @@ function resetPhotoSettings() {
 // ============================================================================
 // EXPORT (ZIP with photos + CSV + XLSX — no Photo Log)
 // ============================================================================
+// A location carried over by Save & New is not an entry on its own.
+function draftHasContent() {
+  return !!(document.getElementById('entryDetails').value.trim() ||
+    document.getElementById('teamGuideCitation').value.trim() ||
+    document.getElementById('entryScore').value.trim() ||
+    Object.keys(currentPhotos).length > 0);
+}
+
+// While editing, the form is an existing saved entry, not an extra one.
+function draftIsNewEntry() {
+  return editingIndex === null && draftHasContent();
+}
+
 function showExportDialog() {
-  const total = savedEntries.length +
-    (document.getElementById('siteName').value.trim() ||
-     document.getElementById('entryDetails').value.trim()  ||
-     Object.keys(currentPhotos).length > 0 ? 1 : 0);
+  const total = savedEntries.length + (draftIsNewEntry() ? 1 : 0);
   if (total === 0) { showToast('Nothing to export yet', true); return; }
   exportDateMode = 'all';
   document.getElementById('exportFromDate').value = '';
@@ -2380,15 +2420,15 @@ async function deleteExportedEntries() {
       if (info && info.dbKey) dbKeys.push(info.dbKey);
     }
   }
-  // If the entry being edited is about to be deleted, exit edit mode first
-  if (editingIndex !== null && savedEntries[editingIndex] && ids.has(savedEntries[editingIndex].id)) {
-    editingIndex = null;
-    if (typeof setEditModeUI === 'function') setEditModeUI(false);
-  }
-  // Filter savedEntries
+  const editing = editingIndex !== null ? savedEntries[editingIndex] : null;
   savedEntries = savedEntries.filter(e => !ids.has(e.id));
+  if (editing) {
+    editingIndex = savedEntries.indexOf(editing);
+    if (editingIndex === -1) { editingIndex = null; setEditModeUI(false); }
+  }
   // If the in-progress draft was part of this export, clear the form too
   if (currentEntryId && ids.has(currentEntryId)) {
+    discardDraftPhotos();
     clearEntryForm(false);
   }
   saveAll();
@@ -2463,7 +2503,7 @@ function updateExportCount() {
   const all = savedEntries.slice();
   const loc = document.getElementById('siteName').value.trim();
   const det = document.getElementById('entryDetails').value.trim();
-  if (loc || det || Object.keys(currentPhotos).length > 0) {
+  if (draftIsNewEntry()) {
     all.push({ location: loc, timestamp: new Date().toISOString(), details: det });
   }
   const match = all.filter(e => entryInRange(e, range)).length;
@@ -2477,7 +2517,7 @@ function updateRefPreview() {
   // Build a preview from the first entry
   let allEntries = JSON.parse(JSON.stringify(savedEntries));
   const loc = document.getElementById('siteName').value.trim();
-  if (loc || Object.keys(currentPhotos).length > 0) {
+  if (draftIsNewEntry()) {
     allEntries.push({ location: loc, timestamp: new Date().toISOString() });
   }
   if (allEntries.length > 0) {
@@ -2527,7 +2567,7 @@ async function runExport() {
   const tgc  = document.getElementById('teamGuideCitation').value.trim();
   const scr  = document.getElementById('entryScore').value.trim();
   const det  = document.getElementById('entryDetails').value.trim();
-  if (loc || det || Object.keys(currentPhotos).length > 0) {
+  if (draftIsNewEntry()) {
     allEntries.push({
       id:        currentEntryId,
       siteName:  loc,
@@ -2814,7 +2854,10 @@ async function runExport() {
 
   try {
     const blob = await zip.generateAsync({ type: 'blob' });
-    await shareOrDownload(blob, 'USFS_Export_' + datestamp() + '.zip');
+    if (!(await shareOrDownload(blob, 'USFS_Export_' + datestamp() + '.zip'))) {
+      showToast('Export cancelled — nothing marked as exported', true);
+      return;
+    }
     showToast(`Exported ${allEntries.length} entries, ${photoCount} photos${misses ? ' (⚠ ' + misses + ' missing)' : ''}`);
 
     // Offer to batch-delete the just-exported entries from this device.
@@ -2855,7 +2898,7 @@ async function saveBackup() {
   const tgc  = document.getElementById('teamGuideCitation').value.trim();
   const scr  = document.getElementById('entryScore').value.trim();
   const det = document.getElementById('entryDetails').value.trim();
-  if (loc || det) {
+  if (draftIsNewEntry()) {
     all.push({
       id: currentEntryId,
       siteName: loc,
@@ -2871,7 +2914,7 @@ async function saveBackup() {
 
   const clean = all.map(({ photos, ...rest }) => rest);
   const blob  = new Blob([JSON.stringify({ version:1, exported: new Date().toISOString(), entries: clean }, null, 2)], { type:'application/json' });
-  await shareOrDownload(blob, `USFS_Backup_${datestamp()}.json`);
+  if (!(await shareOrDownload(blob, `USFS_Backup_${datestamp()}.json`))) { showToast('Backup cancelled', true); return; }
   showToast(`Backup saved \u2014 ${clean.length} entries`);
 }
 
@@ -2896,10 +2939,16 @@ function handleBackupFile(event) {
       const action = confirm(
         `Found ${entries.length} entries in backup.\n\n` +
         `OK = MERGE with existing ${savedEntries.length} entries\n` +
-        `Cancel = REPLACE all current entries`
+        `Cancel = other options`
       );
+      if (!action && !confirm(
+        `REPLACE all ${savedEntries.length} current entries with the ${entries.length} from the backup?\n\n` +
+        `The current entries and their photos will be removed from the list. (Backups don't include photos.)\n\n` +
+        `OK = REPLACE\nCancel = do nothing`
+      )) { showToast('Import cancelled'); return; }
 
       if (!action) {
+        if (editingIndex !== null) { editingIndex = null; setEditModeUI(false); clearEntryForm(false); }
         savedEntries = entries.map(normaliseEntry);
       } else {
         const existing = new Set(savedEntries.map(e => e.location + '|' + e.timestamp));
@@ -2923,8 +2972,20 @@ function handleBackupFile(event) {
   reader.readAsText(file);
 }
 
+// Coerce the fields the UI formats (toFixed, slice) so one bad value can't break startup.
+function repairEntry(e) {
+  const num = v => (v == null || v === '' || isNaN(Number(v))) ? null : Number(v);
+  e.latitude = num(e.latitude); e.longitude = num(e.longitude); e.gpsAccuracy = num(e.gpsAccuracy);
+  if (e.latitude == null || e.longitude == null) e.latitude = e.longitude = null;
+  ['siteName', 'location', 'protocolArea', 'teamGuideCitation', 'score', 'details', 'timestamp'].forEach(k => {
+    if (e[k] != null && typeof e[k] !== 'string') e[k] = String(e[k]);
+  });
+  if (!e.photos || typeof e.photos !== 'object') e.photos = {};
+  return e;
+}
+
 function normaliseEntry(e) {
-  return {
+  return repairEntry({
     id:        e.id        || genId(),
     siteName:  e.siteName  || e.location || '',
     location:  e.location  || e.siteName || '',
@@ -2937,7 +2998,7 @@ function normaliseEntry(e) {
     gpsAccuracy: e.gpsAccuracy != null ? e.gpsAccuracy : null,
     timestamp: e.timestamp || '',
     photos:    {}
-  };
+  });
 }
 
 // ============================================================================
@@ -3626,14 +3687,24 @@ function autoSaveCurrent() {
 }
 
 function saveAll() {
-  try { localStorage.setItem(LS_SAVED, JSON.stringify(savedEntries)); checkStorage(); }
-  catch(e) { showToast('Storage error \u2014 export soon!', true); }
+  try { localStorage.setItem(LS_SAVED, JSON.stringify(savedEntries)); checkStorage(); return true; }
+  catch(e) { showToast('Storage error \u2014 export soon!', true); return false; }
 }
 
 function loadAll() {
   try {
     const s = localStorage.getItem(LS_SAVED);
-    if (s) savedEntries = JSON.parse(s);
+    if (s) {
+      let parsed = null;
+      try { parsed = JSON.parse(s); } catch(e) {}
+      if (Array.isArray(parsed)) {
+        savedEntries = parsed.filter(e => e && typeof e === 'object').map(repairEntry);
+      } else {
+        // Set the unreadable copy aside; the next save would otherwise overwrite it.
+        try { localStorage.setItem(LS_SAVED + '_damaged_' + Date.now(), s); } catch(e) {}
+        setTimeout(() => alert('⚠️ The saved-entry list on this device was damaged and could not be read.\n\nThe damaged copy has been set aside, not deleted.'), 500);
+      }
+    }
   } catch(e) {}
 
   try {
@@ -3820,6 +3891,7 @@ function datestamp() {
   return `${String(d.getMonth()+1).padStart(2,'0')}${String(d.getDate()).padStart(2,'0')}${String(d.getFullYear()).slice(2)}`;
 }
 
+// Returns false if the user cancelled the share sheet (nothing left the device).
 async function shareOrDownload(blob, filename) {
   // Use Web Share API if available (Capacitor / iOS) — triggers native share sheet
   if (navigator.canShare && navigator.canShare({ files: [new File([blob], filename)] })) {
@@ -3828,9 +3900,9 @@ async function shareOrDownload(blob, filename) {
         files: [new File([blob], filename, { type: blob.type })],
         title: filename
       });
-      return;
+      return true;
     } catch(e) {
-      if (e.name === 'AbortError') return; // user cancelled share sheet
+      if (e.name === 'AbortError') return false; // user cancelled share sheet
       // Fall through to download
     }
   }
@@ -3843,6 +3915,7 @@ async function shareOrDownload(blob, filename) {
   a.click();
   document.body.removeChild(a);
   URL.revokeObjectURL(url);
+  return true;
 }
 
 function showToast(msg, isWarn = false) {
