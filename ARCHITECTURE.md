@@ -1,6 +1,6 @@
 # USFS Photo Collector — Architecture
 
-**Document date:** 2026-09-10, updated 2026-09-27 · reflects service-worker cache `v1.15`, iOS marketing version 1.1 (build 11 committed; a local, uncommitted bump to 12 is in progress).
+**Document date:** 2026-09-10, updated 2026-09-27 · reflects service-worker cache `v1.15`, iOS marketing version 1.1, build 12 committed 2026-09-27 (not yet archived/uploaded when this was written).
 
 This is the deep-dive technical reference. Companion documents:
 - [README.md](README.md) — feature overview and function index (partially stale; this document supersedes it where they disagree)
