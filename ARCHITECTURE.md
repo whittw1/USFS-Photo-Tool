@@ -1,6 +1,6 @@
 # USFS Photo Collector — Architecture
 
-**Document date:** 2026-09-10, updated 2026-09-23 · reflects service-worker cache `v1.14`, iOS marketing version 1.1 (build 11 committed; a local bump to 12 was in progress).
+**Document date:** 2026-09-10, updated 2026-09-27 · reflects service-worker cache `v1.14`, iOS marketing version 1.1 (build 11 committed; a local, uncommitted bump to 12 is in progress).
 
 This is the deep-dive technical reference. Companion documents:
 - [README.md](README.md) — feature overview and function index (partially stale; this document supersedes it where they disagree)
@@ -15,6 +15,23 @@ This is the deep-dive technical reference. Companion documents:
 A field data-collection app for U.S. Forest Service environmental audits, used by HGS Engineering auditors. An auditor walks a facility, and for each finding captures: forest + location (GPS-assisted), protocol area, Team Guide citation, score, description, coordinates, and photos. Everything persists on-device with zero connectivity; at the end of the day the auditor exports a ZIP containing renamed photos, a CSV, and a styled Excel findings report, delivered through the iOS share sheet.
 
 Forked from the DLA Audit Photo Tool. All on-device keys are prefixed `usfs_` so both apps can coexist on one device without data collisions.
+
+### Sibling apps and the fork contract
+
+This app belongs to a family of HGS field apps:
+
+| App | Relationship | Location |
+|---|---|---|
+| DLA Audit Photo Tool | Parent — this app was forked from it | its own repo |
+| NPS Audit Photo Collector | Child — forked from this app (Sept 2026) for National Park Service audits: NPS park locations instead of forests, Finding/Observation scoring, and its own audit questions | `~/Desktop/Claude Apps/NPS Audit Tool` |
+| HGS LOTO field app | Related, not a fork — the durable photo-storage fix (§7) was built there first, after a photo-loss incident, then applied here | its own repo |
+
+The siblings are deliberately **separate forks, not one multi-client app**. A single app that asked "which client?" was considered and rejected: client-specific differences reach well beyond locations (scoring, report sorting, branding, export names), shared storage would make every export/delete/integrity path client-aware, and a regression in shared code could break every client at once, including this one while it's in field use.
+
+The cost of forking is **fix drift** — a bug fixed in one sibling must be ported to the others by hand. The contract that keeps that cheap:
+- Every sibling uses its own storage prefix (`usfs_`, `nps_`, …) for localStorage keys, the IndexedDB name, the filesystem photo directory, and the SW cache name, so siblings coexist on one device.
+- Code outside each sibling's client-specific sections stays **textually identical** — no reformatting, renaming, or restructuring of shared code — so a fix ports as a clean copy-paste.
+- Bugs found in one sibling should be checked in the others. The September 2026 fixes (§5, §10, §11) were found by a code review of the NPS app, and most existed here unchanged.
 
 ## 2. System context
 
@@ -35,7 +52,7 @@ Forked from the DLA Audit Photo Tool. All on-device keys are prefixed `usfs_` so
 Two delivery channels share one codebase:
 
 1. **Web PWA** — live at https://salmon-mud-07f7aa310.7.azurestaticapps.net (Azure Static Web Apps, resource `usfs-data-collector`). Auto-deploys on every push to `main` via `.github/workflows/azure-static-web-apps.yml`. Works fully offline after first load via the service worker.
-2. **Native iOS** — the same files wrapped in a Capacitor 8 WKWebView shell, distributed through TestFlight as **"USFS Photos"** (`com.hgsengineering.usfsphotocollector`). The native channel additionally gets durable filesystem photo storage (§7) and the native share sheet.
+2. **Native iOS** — the same files wrapped in a Capacitor 8 WKWebView shell, distributed through TestFlight as **"USFS Photos"** (`com.hgsengineering.usfsphotocollector`). The native channel additionally gets durable filesystem photo storage (§7) and the native share sheet. It loads the app's files from its own bundle rather than through a service worker (§12).
 
 There is **no backend, no server, no authentication, and no telemetry**. Every byte of user data lives on the device until the user exports it. The Azure URL is public; the only "API calls" the app ever makes are same-origin fetches for its own bundled JSON and the two pinned CDN script loads.
 
@@ -43,7 +60,7 @@ There is **no backend, no server, no authentication, and no telemetry**. Every b
 
 | Path | Role |
 |---|---|
-| `index.html` | **The entire application** — all HTML, CSS, and JavaScript (~3,900 lines). No build step, no framework, no modules. |
+| `index.html` | **The entire application** — all HTML, CSS, and JavaScript (~4,000 lines). No build step, no framework, no modules. |
 | `sw.js` | Service worker: offline caching + update discipline (§12). |
 | `manifest.json` | PWA manifest (`display: browser`, green theme `#2e7d32`). |
 | `team_guide_citations.json` | 6,445 searchable citations (~federal US + FS + 7 state supplements). Array of `{c, s, d, r}` (§9). |
@@ -56,6 +73,7 @@ There is **no backend, no server, no authentication, and no telemetry**. Every b
 | `ios/` | Capacitor-generated Xcode project. Version/build numbers live in `ios/App/App.xcodeproj/project.pbxproj` (both Debug and Release configs). |
 | `staticwebapp.config.json` | Azure routes/headers — cache-control per file (§13). |
 | `privacy.html` | Privacy policy page required for App Store review. |
+| `.claude/launch.json` | Local dev-server config for Claude Code's browser preview (`python3 -m http.server 8080`). |
 | `Forest Service App Location Description and Totals.docx`, `Team Guide Cheat Sheet.docx` | Source documents (the cheat sheet feeds the hardcoded `COMMON_CITATIONS` list). |
 
 ## 4. Application structure inside index.html
@@ -90,7 +108,7 @@ All UI event wiring is inline `onclick`/`oninput`/`onchange` attributes plus two
 | JSZip | 3.10.1 | cdnjs | Building the export ZIP |
 | ExcelJS | 4.4.0 | cdnjs | The styled two-sheet XLSX (SheetJS was replaced in mid-2026 because its community edition cannot style cells) |
 
-Both are precached by the service worker so exports work offline. If ExcelJS never loaded (fresh install that has never been online), `runExport()` aborts with "ExcelJS not loaded — go online once first".
+On the web, both are precached by the service worker so exports work offline. **The iOS app has no service worker (§12)**, so there they load from cdnjs at launch and work offline only while the web view's ordinary HTTP cache still holds them — they are not bundled into the app. If ExcelJS isn't loaded, `runExport()` aborts with "ExcelJS not loaded — go online once first" (JSZip has no such guard).
 
 ### Design system
 
@@ -164,7 +182,8 @@ Key details:
 | localStorage | `photo_full_<dbKey>` | **Fallback-only** full-res photo as data URL (§7 tier 3) |
 | IndexedDB | db `usfs_photos_v1`, store `photos` | `{data: ArrayBuffer, type, size}` keyed by dbKey |
 | Native FS | `DATA/usfs_photos/<sanitized dbKey>.jpg` | Durable full-res JPEG (native app only) |
-| SW Cache | `usfs-collector-v1.12` | App shell + data JSON + the two CDN libraries |
+| SW Cache | `usfs-collector-v1.14` | App shell + manifest + data JSON + the two CDN libraries (web only — see §12) |
+| localStorage | `usfs_saved_damaged_<epoch>` | Only present if a damaged saved-entry list was set aside on load (§6) |
 
 `autoSaveCurrent()` runs on effectively every input event, so a mid-entry app kill (including iOS killing the WebView while the camera is open — a real iOS behavior) restores the full draft, thumbnails included, on next launch.
 
@@ -209,7 +228,14 @@ Lists all IndexedDB keys, lists the filesystem directory (`fsPresentKeySet()`), 
 
 ### Deletion
 
-`deletePhotoFromDB(key)` removes **all three tiers** (localStorage fallback, filesystem fire-and-forget, IndexedDB). It's called on single-entry delete (which previously orphaned photo bytes — fixed in build 11) and on post-export batch delete.
+`deletePhotoFromDB(key)` removes **all three tiers** (localStorage fallback, filesystem fire-and-forget, IndexedDB), and works even when IndexedDB is unavailable. Callers:
+- single-entry delete (which previously orphaned photo bytes — fixed in build 11) and post-export batch delete;
+- Save Edit, for the photos the edit replaced or removed;
+- `discardDraftPhotos()` — Cancel Edit, loading another entry over an unsaved draft, and deleting the entry being edited;
+- a successful retake, for the slot's previous draft photo;
+- a capture whose form was cleared before its write finished.
+
+Every caller except entry deletion first checks `photoKeyInSavedEntries()`, so a photo still referenced by a saved entry is never removed.
 
 ### Integrity badge
 
@@ -265,7 +291,7 @@ Note: going through `<input type=file>` means **iOS strips EXIF and re-encodes**
 
 **Dialog:** shows the naming preview, a date filter (chips All / Today / Yesterday / Custom with two date inputs, defaulting to today), and a live count "N entries will be exported" / "M of N match this filter".
 
-**The unsaved-draft rule (`draftIsNewEntry()`):** the form counts as an extra entry only when it is *not* in edit mode and has a description, citation, score, or photo. A location alone doesn't count — Save & New deliberately keeps the location filled in, and counting it used to put a blank phantom row in every export. While editing, the form is an existing saved entry, so the export uses its saved version. The same rule drives export, the export count and preview, backups, and the "unsaved data will be lost" prompt in `editEntry()`.
+**The unsaved-draft rule (`draftIsNewEntry()`):** the form counts as an extra entry only when it is *not* in edit mode and has a description, citation, score, or photo. A location alone doesn't count — Save & New deliberately keeps the location filled in, and counting it used to put a blank phantom row in every export. Protocol Area is excluded for the same reason: `clearEntryForm()` carries it over to the next entry too. While editing, the form is an existing saved entry, so the export uses its saved version. The same rule drives export, the export count and preview, backups, and the "unsaved data will be lost" prompt in `editEntry()`.
 
 **Selection:** deep-clone `savedEntries`, append the draft (with its live form values) if `draftIsNewEntry()`, then filter by the date range (`entryInRange` on `timestamp`; open-ended bounds allowed). Empty result → abort with a toast.
 
@@ -299,21 +325,22 @@ USFS_Data_MMDDYY.csv
 
 Small but load-bearing — it has caused more field bugs than any other file.
 
-- `CACHE_NAME = 'usfs-collector-v1.12'` — **must be bumped whenever any cached file changes** (`index.html`, `sw.js` itself, either data JSON). The bump is what makes installed PWAs and the iOS WebView pick up changes.
+- `CACHE_NAME = 'usfs-collector-v1.14'` — **must be bumped whenever any cached file changes** (`index.html`, `sw.js` itself, `manifest.json`, either data JSON). The bump is what makes installed web/PWA copies pick up changes.
+- **The service worker is web-only.** The iOS app loads its files from Capacitor's `capacitor://localhost` scheme and has no App-Bound Domains configured, and iOS web views only run service workers for app-bound http(s) domains — so in the iOS app `register()` fails silently (its promise is caught) and the app always runs the files in its bundle. iOS picks up changes only through a new TestFlight build, and SW caching problems can't affect it. (WEB_TO_TESTFLIGHT_PLAYBOOK.md describes a SW serving stale files inside the iOS app; given the above, that was most likely a web-channel symptom.)
 - Precache list: `./`, `index.html`, `manifest.json`, both data JSONs, JSZip, ExcelJS.
 - **Install:** `cache.addAll` with every request created as `new Request(url, {cache:'reload'})`. The `reload` is critical: without it the SW install reads through the **browser HTTP cache**, and a stale `max-age` copy of the data JSON gets baked into the brand-new SW cache — this exact bug shipped day-old citation data in July 2026 despite a cache bump. `skipWaiting()` activates immediately.
 - **Activate:** delete every cache whose name ≠ current, then `clients.claim()`.
-- **Fetch:** requests that are navigations or end in `.html`, `/`, or `.json` are **network-first** — fetched with `{cache:'no-cache'}` (forces conditional revalidation, cheap ETag 304s) — with the response copied into the cache and the cache as offline fallback. Only `ok`, non-redirected responses are cached; an error page or redirect (a deploy-time 404, a Wi-Fi login portal) never replaces a good cached copy — the cached copy is served instead. Everything else (CDN libs) is cache-first.
+- **Fetch:** requests that are navigations or end in `.html`, `/`, or `.json` are **network-first** — fetched with `{cache:'no-cache'}` (forces conditional revalidation, cheap ETag 304s) — with the response copied into the cache and the cache as offline fallback. Only `ok`, non-redirected responses are cached; an error page or redirect never replaces a good cached copy — the cached copy is served instead. (The realistic trigger is a transient 404/5xx, e.g. mid-deploy. A Wi-Fi login portal mostly can't impersonate the app because the site is HTTPS — the interception fails TLS and the fetch falls back to the cache anyway.) Everything else (CDN libs) is cache-first.
 
 The Azure config (§13) is the server half of the same fix: the data JSONs are served `public, no-cache` so the client always revalidates; `sw.js`, `index.html`, and `manifest.json` are `no-cache, no-store, must-revalidate`.
 
 ## 13. Hosting and deployment
 
-**Web:** push to `main` → GitHub Actions (`azure-static-web-apps.yml`) → Azure Static Web Apps (`usfs-data-collector`, ~1 min deploys). `staticwebapp.config.json` additionally sets a navigation fallback to `index.html` (excluding JSON and images), JSON MIME types, and security headers (nosniff, DENY framing, strict referrer). No auth is configured; adding Entra ID in front of the URL is a discussed-but-not-done option.
+**Web:** push to `main` → GitHub Actions (`azure-static-web-apps.yml`) → Azure Static Web Apps (`usfs-data-collector`, ~1 min deploys). **There is no staging environment: every push to `main` is a production deploy** to the URL field auditors use, so test locally first. To verify a deploy: `gh run list --limit 1` shows the Actions run, then diff the live files against the repo (`curl -s <site>/index.html | diff -q - index.html`, same for `sw.js`) and confirm the live `CACHE_NAME`. `staticwebapp.config.json` additionally sets a navigation fallback to `index.html` (excluding JSON and images), JSON MIME types, and security headers (nosniff, DENY framing, strict referrer). No auth is configured; adding Entra ID in front of the URL is a discussed-but-not-done option.
 
-**iOS:** `npm run sync` (copies the file list in package.json's `build` script into `www/`, then `npx cap sync ios` into `ios/App/App/public/`) → bump `CURRENT_PROJECT_VERSION` in **both** Debug and Release blocks of `project.pbxproj` (Apple rejects reused build numbers; `MARKETING_VERSION` is user-facing and bumped rarely) → `xcodebuild archive` + `-exportArchive` with `method: app-store-connect, destination: upload` (or Xcode GUI: Product → Archive → Distribute). Signing is automatic under team `QV4MJ85JSK`; `ITSAppUsesNonExemptEncryption=false` in Info.plist skips the export-compliance prompt. Info.plist carries camera/photo-library/location usage strings and references the version fields via `$(MARKETING_VERSION)` / `$(CURRENT_PROJECT_VERSION)` — never hardcode there. Full checklist in the TestFlight playbook.
+**iOS:** `npm run sync` (copies the file list in package.json's `build` script into `www/`, then `npx cap sync ios` into `ios/App/App/public/`) → bump `CURRENT_PROJECT_VERSION` in **both** Debug and Release blocks of `project.pbxproj` (Apple rejects reused build numbers; `MARKETING_VERSION` is user-facing and bumped rarely) → `xcodebuild -project ios/App/App.xcodeproj -scheme App -configuration Release -destination generic/platform=iOS archive -allowProvisioningUpdates`, then `xcodebuild -exportArchive` with an ExportOptions plist of `method: app-store-connect`, `destination: upload`, `signingStyle: automatic`, and `manageAppVersionAndBuildNumber: false` (so Xcode never renumbers the build behind the version policy) — or the Xcode GUI: Product → Archive → Distribute. "Upload succeeded" means App Store Connect has it; TestFlight processing then takes ~10 minutes, and each new build resets TestFlight's 90-day expiry. Signing is automatic under team `QV4MJ85JSK`; `ITSAppUsesNonExemptEncryption=false` in Info.plist skips the export-compliance prompt. Info.plist carries camera/photo-library/location usage strings and references the version fields via `$(MARKETING_VERSION)` / `$(CURRENT_PROJECT_VERSION)` — never hardcode there. Full checklist in the TestFlight playbook.
 
-**The dual-channel skew rule:** the web app updates the moment a user reloads twice (SW update dance); the iOS app only updates when someone archives and uploads a new build. Between iOS builds the two channels intentionally run different versions of the same file — the SW cache-name discipline is what keeps each channel internally consistent.
+**The dual-channel skew rule:** the web app updates the moment a user reloads twice (SW update dance); the iOS app only updates when someone archives and uploads a new build (it has no service worker — §12). Between iOS builds the two channels intentionally run different versions of the same file, so a web fix is not a field fix for iPad users until the next TestFlight build ships.
 
 ## 14. Data build pipelines (developer-side, Node, no npm deps)
 
@@ -334,7 +361,7 @@ Consumes pre-downloaded USFS ArcGIS EDW exports: `offices_raw.json` (`EDW_FSOffi
 
 1. **Wi-Fi-only iPads have no GPS hardware** — location comes from Wi-Fi BSSID lookup and is useless in the backcountry. Use cellular-SKU iPads (GNSS works without a SIM), an external Bluetooth GPS (Bad Elf/Garmin GLO — iOS treats it as the system source), or an iPhone. Tethering does *not* relay the phone's GPS.
 2. **iOS storage eviction** is why the filesystem tier exists (§7). Don't "simplify" photo storage back to IDB-only.
-3. **The SW cache name is the release mechanism.** Changed a cached file? Bump `CACHE_NAME` or field devices won't see it. And keep the `cache:'reload'` / `no-cache` fetch options — removing them reintroduces the stale-JSON bug.
+3. **The SW cache name is the web release mechanism.** Changed a cached file? Bump `CACHE_NAME` or web/PWA users won't see it. Keep the `cache:'reload'` / `no-cache` fetch options — removing them reintroduces the stale-JSON bug. (The iOS app ignores all of this; its release mechanism is the build number.)
 4. **`<input type=file>` recreation** on every camera tap is deliberate (iOS stale-file bug). So is the missing `capture` attribute on Browse.
 5. **iOS re-encodes photos and strips EXIF** through file inputs; original-quality/EXIF capture would require the Capacitor Camera plugin.
 6. **SheetJS community edition can't style cells** — that's why ExcelJS, despite ~500 KB.
@@ -345,7 +372,9 @@ Consumes pre-downloaded USFS ArcGIS EDW exports: `offices_raw.json` (`EDW_FSOffi
 
 ## 17. How to extend safely (checklist)
 
-- Editing `index.html`/data JSON → test in a browser (`python3 -m http.server 8080` or the deployed URL), **bump `CACHE_NAME`**, push to `main` (web ships), and note the iOS channel stays behind until the next TestFlight build.
+- There is **no automated test suite** — verification is manual, against the real code in a browser. Serve the folder locally (`python3 -m http.server 8080`, or the `.claude/launch.json` config); port 8080 is also the NPS sibling's default, so use another port if both run at once. Drive the app's own global functions from the browser console to reproduce edge cases (e.g. stub `window.confirm`, `navigator.share`, or `Storage.prototype.setItem` to simulate cancel/quota paths), and restore any stubs and test data afterward.
+- Editing `index.html`/data JSON → test locally as above, **bump `CACHE_NAME`**, push to `main` (web ships to production immediately), verify the deploy (§13), and note the iOS channel stays behind until the next TestFlight build.
+- Fixed a bug? Check the sibling apps for the same code (§1).
 - New cached asset → add to `URLS_TO_CACHE` *and* bump the cache name *and* (if it must ship in the iOS bundle) add it to package.json's `build` copy list.
 - New entry field → touch all of: the form HTML, `saveEntryAndNew()`, `saveEdit()`, `editEntry()`, `autoSaveCurrent()`/`loadAll()`, `normaliseEntry()`/`repairEntry()`, `draftHasContent()` if the field makes a draft "real", the CSV row, both XLSX sheets, and the saved-panel renderer.
 - New photo behavior → preserve the verify-after-write contract, the three-tier delete, and the edit-mode key suffix; never delete a photo key without `photoKeyInSavedEntries()`.
