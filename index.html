@@ -5,8 +5,8 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no, viewport-fit=cover">
 <meta name="apple-mobile-web-app-title" content="USFS Photo Collector">
 <link rel="manifest" href="manifest.json">
-<script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
-<script src="https://cdnjs.cloudflare.com/ajax/libs/exceljs/4.4.0/exceljs.min.js"></script>
+<script src="vendor/jszip.min.js"></script>
+<script src="vendor/exceljs.min.js"></script>
 <title>USFS Photo Collector</title>
 <script>
 if ('serviceWorker' in navigator) {
@@ -2603,7 +2603,7 @@ async function runExport() {
     showToast(beforeFilter === 0 ? 'Nothing to export' : 'No entries in selected date range', true);
     return;
   }
-  if (typeof ExcelJS === 'undefined') { showToast('ExcelJS not loaded \u2014 go online once first', true); return; }
+  if (typeof ExcelJS === 'undefined' || typeof JSZip === 'undefined') { showToast('Export library didn\u2019t load \u2014 restart the app and try again', true); return; }
 
   showToast('Building export\u2026');
 

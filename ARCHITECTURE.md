@@ -1,6 +1,6 @@
 # USFS Photo Collector — Architecture
 
-**Document date:** 2026-09-10, updated 2026-09-27 · reflects service-worker cache `v1.14`, iOS marketing version 1.1 (build 11 committed; a local, uncommitted bump to 12 is in progress).
+**Document date:** 2026-09-10, updated 2026-09-27 · reflects service-worker cache `v1.15`, iOS marketing version 1.1 (build 11 committed; a local, uncommitted bump to 12 is in progress).
 
 This is the deep-dive technical reference. Companion documents:
 - [README.md](README.md) — feature overview and function index (partially stale; this document supersedes it where they disagree)
@@ -54,7 +54,7 @@ Two delivery channels share one codebase:
 1. **Web PWA** — live at https://salmon-mud-07f7aa310.7.azurestaticapps.net (Azure Static Web Apps, resource `usfs-data-collector`). Auto-deploys on every push to `main` via `.github/workflows/azure-static-web-apps.yml`. Works fully offline after first load via the service worker.
 2. **Native iOS** — the same files wrapped in a Capacitor 8 WKWebView shell, distributed through TestFlight as **"USFS Photos"** (`com.hgsengineering.usfsphotocollector`). The native channel additionally gets durable filesystem photo storage (§7) and the native share sheet. It loads the app's files from its own bundle rather than through a service worker (§12).
 
-There is **no backend, no server, no authentication, and no telemetry**. Every byte of user data lives on the device until the user exports it. The Azure URL is public; the only "API calls" the app ever makes are same-origin fetches for its own bundled JSON and the two pinned CDN script loads.
+There is **no backend, no server, no authentication, and no telemetry**. Every byte of user data lives on the device until the user exports it. The Azure URL is public; the app makes no third-party requests at all — only same-origin fetches for its own files (including the vendored libraries, §4).
 
 ## 3. Repository layout
 
@@ -73,6 +73,7 @@ There is **no backend, no server, no authentication, and no telemetry**. Every b
 | `ios/` | Capacitor-generated Xcode project. Version/build numbers live in `ios/App/App.xcodeproj/project.pbxproj` (both Debug and Release configs). |
 | `staticwebapp.config.json` | Azure routes/headers — cache-control per file (§13). |
 | `privacy.html` | Privacy policy page required for App Store review. |
+| `vendor/` | Bundled JSZip + ExcelJS, with `README.md` (versions, sources, SRI hashes) and license files (§4). |
 | `.claude/launch.json` | Local dev-server config for Claude Code's browser preview (`python3 -m http.server 8080`). |
 | `Forest Service App Location Description and Totals.docx`, `Team Guide Cheat Sheet.docx` | Source documents (the cheat sheet feeds the hardcoded `COMMON_CITATIONS` list). |
 
@@ -101,14 +102,14 @@ One `<script>` block, organized into banner-commented sections in this order:
 
 All UI event wiring is inline `onclick`/`oninput`/`onchange` attributes plus two document-level click listeners (close citation results, close overflow menu). All rendering is string-built `innerHTML`; user text is escaped through `esc()` (a div-textContent round-trip) before interpolation.
 
-### External dependencies (exactly two, both pinned, both CDN)
+### External dependencies (exactly two, both pinned, both vendored)
 
 | Library | Version | Source | Used for |
 |---|---|---|---|
-| JSZip | 3.10.1 | cdnjs | Building the export ZIP |
-| ExcelJS | 4.4.0 | cdnjs | The styled two-sheet XLSX (SheetJS was replaced in mid-2026 because its community edition cannot style cells) |
+| JSZip | 3.10.1 | `vendor/jszip.min.js` | Building the export ZIP |
+| ExcelJS | 4.4.0 | `vendor/exceljs.min.js` | The styled two-sheet XLSX (SheetJS was replaced in mid-2026 because its community edition cannot style cells) |
 
-On the web, both are precached by the service worker so exports work offline. **The iOS app has no service worker (§12)**, so there they load from cdnjs at launch and work offline only while the web view's ordinary HTTP cache still holds them — they are not bundled into the app. If ExcelJS isn't loaded, `runExport()` aborts with "ExcelJS not loaded — go online once first" (JSZip has no such guard).
+Both are **bundled with the app** in `vendor/` (since 2026-09-27; they previously loaded from cdnjs). That matters most on iOS: the iOS app has no service worker (§12), so CDN scripts were only available offline while the web view's ordinary HTTP cache happened to hold them — an iPad exporting with no signal could fail. Now the iOS build ships them inside the app bundle (package.json's `build` script copies `vendor/*.js` into `www/vendor/`), and the web's service worker precaches the same local files. `vendor/README.md` records the exact versions, sources, SRI hashes, and licenses (both MIT); to upgrade, replace the file, re-verify the hash, and bump `CACHE_NAME`. `runExport()` still guards against either library failing to load, with "Export library didn't load — restart the app and try again".
 
 ### Design system
 
@@ -182,7 +183,7 @@ Key details:
 | localStorage | `photo_full_<dbKey>` | **Fallback-only** full-res photo as data URL (§7 tier 3) |
 | IndexedDB | db `usfs_photos_v1`, store `photos` | `{data: ArrayBuffer, type, size}` keyed by dbKey |
 | Native FS | `DATA/usfs_photos/<sanitized dbKey>.jpg` | Durable full-res JPEG (native app only) |
-| SW Cache | `usfs-collector-v1.14` | App shell + manifest + data JSON + the two CDN libraries (web only — see §12) |
+| SW Cache | `usfs-collector-v1.15` | App shell + manifest + data JSON + the two vendored libraries (web only — see §12) |
 | localStorage | `usfs_saved_damaged_<epoch>` | Only present if a damaged saved-entry list was set aside on load (§6) |
 
 `autoSaveCurrent()` runs on effectively every input event, so a mid-entry app kill (including iOS killing the WebView while the camera is open — a real iOS behavior) restores the full draft, thumbnails included, on next launch.
@@ -325,12 +326,12 @@ USFS_Data_MMDDYY.csv
 
 Small but load-bearing — it has caused more field bugs than any other file.
 
-- `CACHE_NAME = 'usfs-collector-v1.14'` — **must be bumped whenever any cached file changes** (`index.html`, `sw.js` itself, `manifest.json`, either data JSON). The bump is what makes installed web/PWA copies pick up changes.
+- `CACHE_NAME = 'usfs-collector-v1.15'` — **must be bumped whenever any cached file changes** (`index.html`, `sw.js` itself, `manifest.json`, either data JSON, the `vendor/` libraries). The bump is what makes installed web/PWA copies pick up changes.
 - **The service worker is web-only.** The iOS app loads its files from Capacitor's `capacitor://localhost` scheme and has no App-Bound Domains configured, and iOS web views only run service workers for app-bound http(s) domains — so in the iOS app `register()` fails silently (its promise is caught) and the app always runs the files in its bundle. iOS picks up changes only through a new TestFlight build, and SW caching problems can't affect it. (WEB_TO_TESTFLIGHT_PLAYBOOK.md describes a SW serving stale files inside the iOS app; given the above, that was most likely a web-channel symptom.)
-- Precache list: `./`, `index.html`, `manifest.json`, both data JSONs, JSZip, ExcelJS.
+- Precache list: `./`, `index.html`, `manifest.json`, both data JSONs, `vendor/jszip.min.js`, `vendor/exceljs.min.js`.
 - **Install:** `cache.addAll` with every request created as `new Request(url, {cache:'reload'})`. The `reload` is critical: without it the SW install reads through the **browser HTTP cache**, and a stale `max-age` copy of the data JSON gets baked into the brand-new SW cache — this exact bug shipped day-old citation data in July 2026 despite a cache bump. `skipWaiting()` activates immediately.
 - **Activate:** delete every cache whose name ≠ current, then `clients.claim()`.
-- **Fetch:** requests that are navigations or end in `.html`, `/`, or `.json` are **network-first** — fetched with `{cache:'no-cache'}` (forces conditional revalidation, cheap ETag 304s) — with the response copied into the cache and the cache as offline fallback. Only `ok`, non-redirected responses are cached; an error page or redirect never replaces a good cached copy — the cached copy is served instead. (The realistic trigger is a transient 404/5xx, e.g. mid-deploy. A Wi-Fi login portal mostly can't impersonate the app because the site is HTTPS — the interception fails TLS and the fetch falls back to the cache anyway.) Everything else (CDN libs) is cache-first.
+- **Fetch:** requests that are navigations or end in `.html`, `/`, or `.json` are **network-first** — fetched with `{cache:'no-cache'}` (forces conditional revalidation, cheap ETag 304s) — with the response copied into the cache and the cache as offline fallback. Only `ok`, non-redirected responses are cached; an error page or redirect never replaces a good cached copy — the cached copy is served instead. (The realistic trigger is a transient 404/5xx, e.g. mid-deploy. A Wi-Fi login portal mostly can't impersonate the app because the site is HTTPS — the interception fails TLS and the fetch falls back to the cache anyway.) Everything else (the vendored libraries) is cache-first.
 
 The Azure config (§13) is the server half of the same fix: the data JSONs are served `public, no-cache` so the client always revalidates; `sw.js`, `index.html`, and `manifest.json` are `no-cache, no-store, must-revalidate`.
 
@@ -352,7 +353,7 @@ Consumes pre-downloaded USFS ArcGIS EDW exports: `offices_raw.json` (`EDW_FSOffi
 
 ## 15. Security & privacy posture
 
-- All data is client-side; the app makes no network writes anywhere. Exports leave the device only through the user's own share-sheet action.
+- All data is client-side; the app makes no network writes anywhere, and loads no third-party code at runtime (libraries are vendored and hash-verified). Exports leave the device only through the user's own share-sheet action.
 - No accounts, no auth, no cookies, no analytics. The public Azure URL serves only the static app.
 - XSS surface: the saved-entries list, citation search results, and the selected-citation card pass text through `esc()`; the location picker escapes `<` and single quotes. The app never renders remote content.
 - The privacy policy (`privacy.html`) exists to satisfy App Store review; it accurately states data never leaves the device.
@@ -364,7 +365,7 @@ Consumes pre-downloaded USFS ArcGIS EDW exports: `offices_raw.json` (`EDW_FSOffi
 3. **The SW cache name is the web release mechanism.** Changed a cached file? Bump `CACHE_NAME` or web/PWA users won't see it. Keep the `cache:'reload'` / `no-cache` fetch options — removing them reintroduces the stale-JSON bug. (The iOS app ignores all of this; its release mechanism is the build number.)
 4. **`<input type=file>` recreation** on every camera tap is deliberate (iOS stale-file bug). So is the missing `capture` attribute on Browse.
 5. **iOS re-encodes photos and strips EXIF** through file inputs; original-quality/EXIF capture would require the Capacitor Camera plugin.
-6. **SheetJS community edition can't style cells** — that's why ExcelJS, despite ~500 KB.
+6. **SheetJS community edition can't style cells** — that's why ExcelJS, despite ~950 KB minified.
 7. **Version bumps are by explicit request only** (team policy) — both the iOS build number and any user-facing version.
 8. **`www/` is generated** — edit root files, run `npm run sync`.
 9. The 3-digit Photos column vs 4-digit filenames in the XLSX report is a deliberate user preference, not a bug.
