@@ -499,7 +499,9 @@ if ('serviceWorker' in navigator) {
     opacity: 0;
     transition: opacity 0.3s;
     pointer-events: none;
-    white-space: nowrap;
+    width: max-content;
+    max-width: calc(100vw - 32px);
+    text-align: center;
   }
   .toast.show { opacity: 1; }
   .toast.toast-warn { background: var(--warning); color: #ffffff; }
@@ -1515,10 +1517,14 @@ function addPhotoSlot() {
 }
 
 function removePhotoSlot(slotId) {
+  if (currentPhotos[slotId] && !confirmDelete('this photo')) return;
   const wrapper = document.getElementById('wrapper_' + slotId);
   if (wrapper) wrapper.remove();
   extraPhotoSlots = extraPhotoSlots.filter(s => s !== slotId);
+  const removed = currentPhotos[slotId];
   delete currentPhotos[slotId];
+  // A photo only this form owned; a saved entry's own photo is dealt with by Save Edit.
+  if (removed && removed.dbKey && !photoKeyInSavedEntries(removed.dbKey)) deletePhotoFromDB(removed.dbKey);
   renumberExtraSlots();
   autoSaveCurrent();
 }
@@ -2296,6 +2302,7 @@ function handlePhoto(input, slotId) {
         showToast('⚠ Photo not added — the entry was saved or cleared before it finished. Retake it.', true);
         return;
       }
+      if (!document.getElementById('photo_' + slotId)) { photoCaptureDone(dbKey); return; }   // slot removed meanwhile
       let w = img.width, h = img.height;
       if (w > settings.maxWidth || h > settings.maxHeight) {
         const ratio = Math.min(settings.maxWidth / w, settings.maxHeight / h);
@@ -3900,9 +3907,9 @@ async function checkStorage() {
       if (now - lastStorageWarnShown > 5 * 60 * 1000) {
         lastStorageWarnShown = now;
         if (pct >= 90) {
-          showToast('\u26A0 Storage nearly full \u2014 export & clear entries now!', true);
+          showToast('\u26A0 Storage nearly full \u2014 export & clear entries now!', true, true);
         } else {
-          showToast('\u26A0 Storage over half full \u2014 consider exporting soon', true);
+          showToast('\u26A0 Storage over half full \u2014 consider exporting soon', true, true);
         }
       }
     } else {
@@ -3989,11 +3996,26 @@ async function shareOrDownload(blob, filename) {
   return true;
 }
 
-function showToast(msg, isWarn = false) {
+function confirmDelete(what, detail) {
+  if (!confirm('Delete ' + what + '?' + (detail ? '\n\n' + detail : ''))) return false;
+  return confirm('Second check.\n\n' + what.charAt(0).toUpperCase() + what.slice(1) + ' will be gone for good, and this cannot be undone.\n\nDelete it?');
+}
+let _toastTimer = 0, _toastWaiting = null;
+function showToast(msg, isWarn = false, whenFree = false) {
   const t = document.getElementById('toast');
+  // A routine reminder (storage) waits until the message on screen has been read.
+  if (whenFree && t.classList.contains('show')) { _toastWaiting = [msg, isWarn]; return; }
   t.textContent = msg;
   t.className   = 'toast show' + (isWarn ? ' toast-warn' : '');
-  setTimeout(() => { t.className = 'toast'; }, 2500);
+  // Long enough to read, never more than 10 s, and an earlier toast's timer
+  // never hides a newer one. Only 'show' comes off, so a warning fades out in
+  // its own colour.
+  clearTimeout(_toastTimer);
+  _toastTimer = setTimeout(() => {
+    t.classList.remove('show');
+    const next = _toastWaiting; _toastWaiting = null;
+    if (next) _toastTimer = setTimeout(() => showToast(next[0], next[1]), 400);
+  }, Math.min(10000, Math.max(2500, String(msg).length * 50)));
 }
 
 // ============================================================================

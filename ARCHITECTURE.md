@@ -1,6 +1,6 @@
 # USFS Photo Collector — Architecture
 
-**Document date:** 2026-09-10, updated 2026-09-28 · reflects service-worker cache `v1.16`, iOS marketing version 1.1, build 12 committed 2026-09-27 (not yet archived/uploaded when this was written).
+**Document date:** 2026-09-10, updated 2026-09-28 · reflects service-worker cache `v1.17`, iOS marketing version 1.1, build 12 committed 2026-09-27 (not yet archived/uploaded when this was written).
 
 This is the deep-dive technical reference. Companion documents:
 - [README.md](README.md) — feature overview and function index (partially stale; this document supersedes it where they disagree)
@@ -98,7 +98,7 @@ One `<script>` block, organized into banner-commented sections in this order:
 15. **Team Guide citation search** — synonyms, hints, chips, recents (§9)
 16. **Common Citations** — cheat-sheet quick-pick modal
 17. **Persistence** — autosave, `saveAll()`/`loadAll()`, storage monitor
-18. **Utilities** — CSV quoting, datestamp, `shareOrDownload()`, toast, overflow menu
+18. **Utilities** — CSV quoting, datestamp, `shareOrDownload()`, `confirmDelete()`, toast, overflow menu
 
 All UI event wiring is inline `onclick`/`oninput`/`onchange` attributes plus two document-level click listeners (close citation results, close overflow menu). All rendering is string-built `innerHTML`; user text is escaped through `esc()` (a div-textContent round-trip) before interpolation.
 
@@ -110,6 +110,10 @@ All UI event wiring is inline `onclick`/`oninput`/`onchange` attributes plus two
 | ExcelJS | 4.4.0 | `vendor/exceljs.min.js` | The styled two-sheet XLSX (SheetJS was replaced in mid-2026 because its community edition cannot style cells) |
 
 Both are **bundled with the app** in `vendor/` (since 2026-09-27; they previously loaded from cdnjs). That matters most on iOS: the iOS app has no service worker (§12), so CDN scripts were only available offline while the web view's ordinary HTTP cache happened to hold them — an iPad exporting with no signal could fail. Now the iOS build ships them inside the app bundle (package.json's `build` script copies `vendor/*.js` into `www/vendor/`), and the web's service worker precaches the same local files. `vendor/README.md` records the exact versions, sources, SRI hashes, and licenses (both MIT); to upgrade, replace the file, re-verify the hash, and bump `CACHE_NAME`. `runExport()` still guards against either library failing to load, with "Export library didn't load — restart the app and try again".
+
+### Toasts
+
+`showToast(msg, isWarn, whenFree)` (shared verbatim with NPS) keeps each message up for 50 ms per character, clamped to 2.5–10 s; a newer toast cancels the older one's timer, so it's never cut short; only the `show` class is removed on hide, so a warning fades out amber; and `whenFree` messages (the storage reminders) wait until the toast on screen has gone instead of replacing it, e.g. an export result. The `.toast` rule uses `width: max-content; max-width: calc(100vw - 32px)`, so long warnings wrap inside the screen instead of running off both sides.
 
 ### Design system
 
@@ -183,7 +187,7 @@ Key details:
 | localStorage | `photo_full_<dbKey>` | **Fallback-only** full-res photo as data URL (§7 tier 3) |
 | IndexedDB | db `usfs_photos_v1`, store `photos` | `{data: ArrayBuffer, type, size}` keyed by dbKey |
 | Native FS | `DATA/usfs_photos/<sanitized dbKey>.jpg` | Durable full-res JPEG (native app only) |
-| SW Cache | `usfs-collector-v1.16` | App shell + manifest + data JSON + the two vendored libraries (web only — see §12) |
+| SW Cache | `usfs-collector-v1.17` | App shell + manifest + data JSON + the two vendored libraries (web only — see §12) |
 | localStorage | `usfs_saved_damaged_<epoch>` | Only present if a damaged saved-entry list was set aside on load (§6) |
 
 `autoSaveCurrent()` runs on effectively every input event, so a mid-entry app kill (including iOS killing the WebView while the camera is open — a real iOS behavior) restores the full draft, thumbnails included, on next launch.
@@ -238,7 +242,8 @@ WebKit closes IndexedDB connections — after the app sits in the background, or
 - Save Edit, for the photos the edit replaced or removed;
 - `discardDraftPhotos()` — Cancel Edit, loading another entry over an unsaved draft, and deleting the entry being edited;
 - a successful retake, for the slot's previous draft photo;
-- a capture whose form was cleared before its write finished.
+- a capture whose form was cleared before its write finished;
+- removing an extra photo slot, for a photo only the form owned (a saved entry's own photo waits for Save Edit, so Cancel still brings it back).
 
 Every caller except entry deletion first checks `photoKeyInSavedEntries()`, so a photo still referenced by a saved entry is never removed.
 
@@ -289,7 +294,7 @@ Selecting a citation writes `"CODE — regulation"` (or bare code) into the hidd
 6. **Capture registry**: `photoCaptureStarted(key)` / `photoCaptureDone(key)` track every photo still being read, resized or written (cleared on every exit, including unreadable files via `img.onerror`/`reader.onerror`); `photoCaptureBusy()` is what Save Edit checks. Entries older than 30 s are ignored, so a capture that died can never block saving for good. Ported verbatim from NPS.
 7. **Save & New during processing**: if the form moves to another entry before the image has decoded, the photo is dropped with a "retake it" warning rather than landing in the wrong entry. If the entry is saved while the bytes are still being written, the write finishes against the photo record the entry already holds (its `unsaved` flag is updated and re-persisted), and the new blank form is left untouched. A photo whose form was cleared (not saved) mid-write has its bytes deleted.
 
-Photos 1–2 are fixed slots (`p_main`, `p_wide`); "Add Photo" appends `p_extra_N` slots, removable and renumbered live; edit mode and draft-restore both rebuild extra slots from data.
+Photos 1–2 are fixed slots (`p_main`, `p_wide`); "Add Photo" appends `p_extra_N` slots, removable and renumbered live — removing a slot that holds a photo asks twice through `confirmDelete()` (NPS's two-step "Delete …? / Second check" prompt, shared verbatim); an empty slot is removed without asking; edit mode and draft-restore both rebuild extra slots from data.
 
 Note: going through `<input type=file>` means **iOS strips EXIF and re-encodes** — GPS lives in the entry record, not the image file, by design.
 
@@ -331,7 +336,7 @@ USFS_Data_MMDDYY.csv
 
 Small but load-bearing — it has caused more field bugs than any other file.
 
-- `CACHE_NAME = 'usfs-collector-v1.16'` — **must be bumped whenever any cached file changes** (`index.html`, `sw.js` itself, `manifest.json`, either data JSON, the `vendor/` libraries). The bump is what makes installed web/PWA copies pick up changes.
+- `CACHE_NAME = 'usfs-collector-v1.17'` — **must be bumped whenever any cached file changes** (`index.html`, `sw.js` itself, `manifest.json`, either data JSON, the `vendor/` libraries). The bump is what makes installed web/PWA copies pick up changes.
 - **The service worker is web-only.** The iOS app loads its files from Capacitor's `capacitor://localhost` scheme and has no App-Bound Domains configured, and iOS web views only run service workers for app-bound http(s) domains — so in the iOS app `register()` fails silently (its promise is caught) and the app always runs the files in its bundle. iOS picks up changes only through a new TestFlight build, and SW caching problems can't affect it. (WEB_TO_TESTFLIGHT_PLAYBOOK.md describes a SW serving stale files inside the iOS app; given the above, that was most likely a web-channel symptom.)
 - Precache list: `./`, `index.html`, `manifest.json`, both data JSONs, `vendor/jszip.min.js`, `vendor/exceljs.min.js`.
 - **Install:** `cache.addAll` with every request created as `new Request(url, {cache:'reload'})`. The `reload` is critical: without it the SW install reads through the **browser HTTP cache**, and a stale `max-age` copy of the data JSON gets baked into the brand-new SW cache — this exact bug shipped day-old citation data in July 2026 despite a cache bump. `skipWaiting()` activates immediately.
