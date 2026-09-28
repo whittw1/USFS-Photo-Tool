@@ -1,4 +1,4 @@
-const CACHE_NAME = 'usfs-collector-v1.15';
+const CACHE_NAME = 'usfs-collector-v1.16';
 const URLS_TO_CACHE = [
   './',
   './index.html',

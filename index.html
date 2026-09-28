@@ -1397,7 +1397,8 @@ function renderLocationList(list) {
   container.innerHTML = list.map(item => {
     const distStr = item.dist !== null ? `<span style="color:var(--text-dim);font-size:12px;float:right;">${item.dist < 0.1 ? '< 0.1' : item.dist.toFixed(1)} mi</span>` : '';
     const typeStr = item.type ? `<span style="color:var(--text-dim);font-size:11px;"> [${item.type}]</span>` : '';
-    return `<div class="loc-item" onclick="pickLocation('${item.name.replace(/'/g, "\\'")}')">` +
+    const attrName = item.name.replace(/\\/g, '\\\\').replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/'/g, "\\'");
+    return `<div class="loc-item" onclick="pickLocation('${attrName}')">` +
       `${distStr}${item.name.replace(/</g,'&lt;')}${typeStr}</div>`;
   }).join('');
 }
@@ -1849,6 +1850,7 @@ function editEntry(index) {
 }
 
 function saveEdit() {
+  if (photoCaptureBusy()) { showToast('A photo is still being saved \u2014 tap Save again in a moment', true); return; }
   const location = document.getElementById('siteName').value.trim();
   const details  = document.getElementById('entryDetails').value.trim();
   const score    = document.getElementById('entryScore').value.trim();
@@ -1863,6 +1865,18 @@ function saveEdit() {
   }
 
   const oldEntry = savedEntries[editingIndex];
+  // A retake that did not store has no bytes behind it. Keep the photo the entry
+  // already had rather than trade a good original for nothing.
+  const photos = Object.assign({}, currentPhotos);
+  const formPhotos = Object.values(currentPhotos);
+  const keptOriginal = [];
+  Object.keys(photos).forEach(slot => {
+    const cur = photos[slot], orig = (oldEntry.photos || {})[slot];
+    if (cur && cur.unsaved === true && orig && orig.dbKey && orig.dbKey !== cur.dbKey) {
+      photos[slot] = orig;
+      keptOriginal.push(PHOTO_SLOT_NAMES[slot] || 'an extra photo');
+    }
+  });
   savedEntries[editingIndex] = {
     id:          currentEntryId,
     siteName:    location,
@@ -1875,7 +1889,7 @@ function saveEdit() {
     longitude:   currentGPS ? currentGPS.longitude : null,
     gpsAccuracy: currentGPS ? currentGPS.accuracy  : null,
     timestamp:   oldEntry.timestamp,
-    photos:      Object.assign({}, currentPhotos)
+    photos:      photos
   };
 
   if (!saveAll()) {
@@ -1886,11 +1900,12 @@ function saveEdit() {
   editingIndex = null;
   setEditModeUI(false);
   clearEntryForm(false);
-  // Photos the edit replaced or removed
-  Object.values(oldEntry.photos || {}).forEach(p => { if (p && p.dbKey && !photoKeyInSavedEntries(p.dbKey)) deletePhotoFromDB(p.dbKey); });
+  // Photos the edit replaced or removed, and retakes that were not kept
+  Object.values(oldEntry.photos || {}).concat(formPhotos).forEach(p => { if (p && p.dbKey && !photoKeyInSavedEntries(p.dbKey)) deletePhotoFromDB(p.dbKey); });
   renderSavedPanel();
   updateHeaderBadge();
-  showToast('\u2714 Entry updated');
+  if (keptOriginal.length) showToast('\u2714 Entry updated \u2014 ' + keptOriginal.join(' and ') + ' kept the original; the retake did not save', true);
+  else showToast('\u2714 Entry updated');
 }
 
 function cancelEdit() {
@@ -1983,38 +1998,64 @@ function openPhotoDB() {
         const db = e.target.result;
         if (!db.objectStoreNames.contains('photos')) db.createObjectStore('photos');
       };
-      req.onsuccess = e => { photoDB = e.target.result; resolve(photoDB); };
+      req.onsuccess = e => {
+        const db = e.target.result;
+        // The browser can close this connection under us; the next call then
+        // opens a fresh one instead of failing on a dead handle.
+        db.onclose = () => { if (photoDB === db) photoDB = null; };
+        db.onversionchange = () => { try { db.close(); } catch (x) {} if (photoDB === db) photoDB = null; };
+        photoDB = db;
+        resolve(db);
+      };
       req.onerror   = e => { idbAvailable = false; reject(e); };
       req.onblocked = e => { idbAvailable = false; reject(e); };
     } catch(e) { idbAvailable = false; reject(e); }
   });
 }
 
+// WebKit drops IndexedDB connections — after the app has sat in the background,
+// or when its storage process restarts — and every transaction on the old handle
+// then fails. The cached connection is forgotten and the operation is tried once
+// more on a fresh one; without this, every stored photo read as missing until
+// the app was reloaded.
+function forgetPhotoDB() {
+  const db = photoDB; photoDB = null;
+  try { if (db) db.close(); } catch (e) {}
+}
+function lostPhotoDB(e) {
+  const err = (e && e.target && e.target.error) || e || {};
+  return err.name === 'InvalidStateError' || err.name === 'UnknownError' ||
+         /connection|closing|closed/i.test(String(err.message || ''));
+}
+function withPhotoDB(run) {
+  return openPhotoDB().then(run).catch(e => {
+    if (!lostPhotoDB(e)) throw e;
+    forgetPhotoDB();
+    return openPhotoDB().then(run);
+  });
+}
+
 function savePhotoToDB(key, buf, mime) {
-  return openPhotoDB().then(db => new Promise((resolve, reject) => {
-    try {
-      const tx = db.transaction('photos', 'readwrite');
-      tx.objectStore('photos').put({ data: buf, type: mime || 'image/jpeg', size: buf.byteLength }, key);
-      tx.oncomplete = () => resolve(true);
-      tx.onerror = reject;
-      tx.onabort = reject;
-    } catch(e) { reject(e); }
+  return withPhotoDB(db => new Promise((resolve, reject) => {
+    const tx = db.transaction('photos', 'readwrite');          // throws at once on a dead connection
+    tx.objectStore('photos').put({ data: buf, type: mime || 'image/jpeg', size: buf.byteLength }, key);
+    tx.oncomplete = () => resolve(true);
+    tx.onerror = () => reject(tx.error || new Error('photo write failed'));
+    tx.onabort = () => reject(tx.error || new Error('photo write aborted'));
   }));
 }
 
 function getPhotoFromDB(key) {
-  return openPhotoDB().then(db => new Promise((resolve) => {
-    try {
-      const req = db.transaction('photos','readonly').objectStore('photos').get(key);
-      req.onsuccess = () => {
-        const r = req.result;
-        if (!r) { resolve(null); return; }
-        if (r.data && (r.data instanceof ArrayBuffer || r.data.byteLength !== undefined)) resolve(r);
-        else if (r instanceof ArrayBuffer) resolve({ data: r, type: 'image/jpeg', size: r.byteLength });
-        else resolve(null);
-      };
-      req.onerror = () => resolve(null);
-    } catch(e) { resolve(null); }
+  return withPhotoDB(db => new Promise((resolve, reject) => {
+    const req = db.transaction('photos','readonly').objectStore('photos').get(key);
+    req.onsuccess = () => {
+      const r = req.result;
+      if (!r) { resolve(null); return; }
+      if (r.data && (r.data instanceof ArrayBuffer || r.data.byteLength !== undefined)) resolve(r);
+      else if (r instanceof ArrayBuffer) resolve({ data: r, type: 'image/jpeg', size: r.byteLength });
+      else resolve(null);
+    };
+    req.onerror = () => reject(req.error || new Error('photo read failed'));
   })).catch(() => null);
 }
 
@@ -2028,15 +2069,16 @@ function getPhotoFallback(key) {
 
 function deletePhotoFromDB(key) {
   try { localStorage.removeItem('photo_full_' + key); } catch(e) {}
-  fsDeletePhoto(key); // remove the durable filesystem copy too (fire-and-forget)
-  return openPhotoDB().then(db => new Promise(resolve => {
-    try {
-      const tx = db.transaction('photos','readwrite');
-      tx.objectStore('photos').delete(key);
-      tx.oncomplete = resolve;
-      tx.onerror    = resolve;
-    } catch(e) { resolve(); }
+  // The filesystem copy is waited for too: a caller that awaits this must be
+  // able to rely on every copy being gone.
+  const fs = Promise.resolve().then(() => fsDeletePhoto(key)).catch(() => {});
+  const idb = withPhotoDB(db => new Promise((resolve, reject) => {
+    const tx = db.transaction('photos','readwrite');
+    tx.objectStore('photos').delete(key);
+    tx.oncomplete = resolve;
+    tx.onerror    = () => reject(tx.error || new Error('photo delete failed'));
   })).catch(() => {});
+  return Promise.all([fs, idb]).then(() => {});
 }
 
 function photoDBKey(entryId, slotId) {
@@ -2071,12 +2113,10 @@ function uint8ToBase64(bytes) {
   return btoa(binary);
 }
 function getAllPhotoKeys() {
-  return openPhotoDB().then(db => new Promise(resolve => {
-    try {
-      const req = db.transaction('photos','readonly').objectStore('photos').getAllKeys();
-      req.onsuccess = () => resolve(req.result || []);
-      req.onerror   = () => resolve([]);
-    } catch(e) { resolve([]); }
+  return withPhotoDB(db => new Promise((resolve, reject) => {
+    const req = db.transaction('photos','readonly').objectStore('photos').getAllKeys();
+    req.onsuccess = () => resolve(req.result || []);
+    req.onerror   = () => reject(req.error || new Error('photo list failed'));
   })).catch(() => []);
 }
 
@@ -2223,6 +2263,19 @@ function updateIntegrityBadge() {
   _integrityTimer = setTimeout(() => { _integrityTimer = null; runIntegrityCheck(false); }, 500);
 }
 
+// Photos still being read, resized or written, by key, with when they started.
+// Save Edit waits for these: committing an edit mid-write swapped in a reference
+// to bytes that were not there yet, and never would be if the write failed. The
+// 30-second age limit means a capture that died without cleaning up can never
+// block saving for good.
+const _photoCapturesPending = new Map();
+function photoCaptureStarted(key) { _photoCapturesPending.set(key, Date.now()); }
+function photoCaptureDone(key) { _photoCapturesPending.delete(key); }
+function photoCaptureBusy() {
+  const now = Date.now();
+  for (const t of _photoCapturesPending.values()) { if (now - t < 30000) return true; }
+  return false;
+}
 function handlePhoto(input, slotId) {
   const file = input.files[0];
   if (!file) return;
@@ -2232,12 +2285,14 @@ function handlePhoto(input, slotId) {
   const dbKey    = photoDBKey(currentEntryId, slotId) + (editingIndex !== null ? '_' + Date.now().toString(36) : '');
   const settings = getPhotoSettings();
   const entryIdAtCapture = currentEntryId;
+  photoCaptureStarted(dbKey);
 
   const reader = new FileReader();
   reader.onload = e => {
     const img = new Image();
     img.onload = async () => {
       if (currentEntryId !== entryIdAtCapture) {
+        photoCaptureDone(dbKey);
         showToast('⚠ Photo not added — the entry was saved or cleared before it finished. Retake it.', true);
         return;
       }
@@ -2271,6 +2326,7 @@ function handlePhoto(input, slotId) {
       // Persist durably and CONFIRM it stuck; surface failures loudly instead of
       // silently continuing.
       const _res = await storePhotoBytes(dbKey, dataUrl);
+      photoCaptureDone(dbKey);
       const sizeKB = Math.round(dataUrl.length * 0.75 / 1024);
       photo.unsaved = !_res.ok;
       if (_res.ok && prevKey && prevKey !== dbKey && !photoKeyInSavedEntries(prevKey)) deletePhotoFromDB(prevKey);
@@ -2297,8 +2353,10 @@ function handlePhoto(input, slotId) {
 
       autoSaveCurrent();
     };
+    img.onerror = () => { photoCaptureDone(dbKey); showToast('\u26a0 That photo could not be read \u2014 take it again.', true); };
     img.src = e.target.result;
   };
+  reader.onerror = () => { photoCaptureDone(dbKey); showToast('\u26a0 That photo could not be read \u2014 take it again.', true); };
   reader.readAsDataURL(file);
 }
 
@@ -3855,26 +3913,22 @@ async function checkStorage() {
 }
 
 function estimateIDBSize() {
-  return new Promise((resolve, reject) => {
-    if (!photoDB) { resolve(0); return; }
-    try {
-      const tx = photoDB.transaction('photos', 'readonly');
-      const store = tx.objectStore('photos');
-      let total = 0;
-      const cursor = store.openCursor();
-      cursor.onsuccess = e => {
-        const c = e.target.result;
-        if (c) {
-          const val = c.value;
-          if (val && val.data) total += val.data.byteLength || 0;
-          c.continue();
-        } else {
-          resolve(total);
-        }
-      };
-      cursor.onerror = () => resolve(0);
-    } catch(e) { resolve(0); }
-  });
+  if (!idbAvailable) return Promise.resolve(0);
+  return withPhotoDB(db => new Promise((resolve, reject) => {
+    const cursor = db.transaction('photos', 'readonly').objectStore('photos').openCursor();
+    let total = 0;
+    cursor.onsuccess = e => {
+      const c = e.target.result;
+      if (c) {
+        const val = c.value;
+        if (val && val.data) total += val.data.byteLength || 0;
+        c.continue();
+      } else {
+        resolve(total);
+      }
+    };
+    cursor.onerror = () => reject(cursor.error || new Error('size estimate failed'));
+  })).catch(() => 0);
 }
 
 function checkPreviousDayEntries() {

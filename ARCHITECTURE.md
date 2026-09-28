@@ -1,6 +1,6 @@
 # USFS Photo Collector — Architecture
 
-**Document date:** 2026-09-10, updated 2026-09-27 · reflects service-worker cache `v1.15`, iOS marketing version 1.1, build 12 committed 2026-09-27 (not yet archived/uploaded when this was written).
+**Document date:** 2026-09-10, updated 2026-09-28 · reflects service-worker cache `v1.16`, iOS marketing version 1.1, build 12 committed 2026-09-27 (not yet archived/uploaded when this was written).
 
 This is the deep-dive technical reference. Companion documents:
 - [README.md](README.md) — feature overview and function index (partially stale; this document supersedes it where they disagree)
@@ -162,7 +162,7 @@ Module-level variables (the entire runtime state):
 
 Key details:
 - `photos[slot].thumbnail` is an **inline base64 data URL** (~80 px wide, JPEG q=0.4) stored *inside the entry in localStorage* — it's what the saved list and slot previews render without touching the photo stores.
-- `photos[slot].dbKey` is the pointer to the full-resolution bytes: `photoDBKey(entryId, slotId)` = entryId with non-alphanumerics replaced by `_`, then `__`, then the slot id, e.g. `e_1711234567890_a1b2__p_main`. The same key addresses all three storage tiers. **Exception — photos taken while editing** get a unique suffix (`…__p_main_<base36 time>`) so a retake never overwrites the saved entry's photo: **Save Edit** deletes the replaced/removed old photos, **Cancel** deletes the discarded retakes (`discardDraftPhotos()`). Any code that deletes photo bytes must first check `photoKeyInSavedEntries()`.
+- `photos[slot].dbKey` is the pointer to the full-resolution bytes: `photoDBKey(entryId, slotId)` = entryId with non-alphanumerics replaced by `_`, then `__`, then the slot id, e.g. `e_1711234567890_a1b2__p_main`. The same key addresses all three storage tiers. **Exception — photos taken while editing** get a unique suffix (`…__p_main_<base36 time>`) so a retake never overwrites the saved entry's photo: **Save Edit** deletes the replaced/removed old photos, **Cancel** deletes the discarded retakes (`discardDraftPhotos()`). Save Edit never trades a good original for nothing: while any capture is still being read or written (`photoCaptureBusy()`, §10) it refuses with "A photo is still being saved — tap Save again in a moment", and a retake whose write failed (`unsaved === true`) is dropped in favour of the original photo for that slot, with a message saying so. Any code that deletes photo bytes must first check `photoKeyInSavedEntries()`.
 - Extra slot ids are `p_extra_<next unused index>` — never the slot count, which collides after a middle slot is removed.
 - `photos[slot].unsaved === true` means the durable write **failed verification** at capture time (§7).
 - **Score is mandatory**: `saveEntryAndNew()` and `saveEdit()` both refuse with a toast until a score button is selected.
@@ -183,7 +183,7 @@ Key details:
 | localStorage | `photo_full_<dbKey>` | **Fallback-only** full-res photo as data URL (§7 tier 3) |
 | IndexedDB | db `usfs_photos_v1`, store `photos` | `{data: ArrayBuffer, type, size}` keyed by dbKey |
 | Native FS | `DATA/usfs_photos/<sanitized dbKey>.jpg` | Durable full-res JPEG (native app only) |
-| SW Cache | `usfs-collector-v1.15` | App shell + manifest + data JSON + the two vendored libraries (web only — see §12) |
+| SW Cache | `usfs-collector-v1.16` | App shell + manifest + data JSON + the two vendored libraries (web only — see §12) |
 | localStorage | `usfs_saved_damaged_<epoch>` | Only present if a damaged saved-entry list was set aside on load (§6) |
 
 `autoSaveCurrent()` runs on effectively every input event, so a mid-entry app kill (including iOS killing the WebView while the camera is open — a real iOS behavior) restores the full draft, thumbnails included, on next launch.
@@ -227,9 +227,13 @@ Filesystem → IndexedDB → localStorage fallback, first hit wins, returning `{
 
 Lists all IndexedDB keys, lists the filesystem directory (`fsPresentKeySet()`), and copies every IDB-only photo to the filesystem (base64-encoded in 32 KB chunks — `uint8ToBase64` avoids the `String.fromCharCode.apply` stack overflow above ~100 KB). Shows "Secured N photos to durable storage" if it moved anything. IDB copies are left in place as redundancy.
 
+### Reconnecting after WebKit drops the database
+
+WebKit closes IndexedDB connections — after the app sits in the background, or when its storage process restarts — and every transaction on the old handle then fails. Every IndexedDB operation (`openPhotoDB`, `savePhotoToDB`, `getPhotoFromDB`, `deletePhotoFromDB`, `getAllPhotoKeys`, `estimateIDBSize`) goes through `withPhotoDB()`, which on a dropped-connection error (`lostPhotoDB()`) forgets the dead handle (`forgetPhotoDB()`) and retries once on a fresh one; `openPhotoDB()` also clears the cached handle on `onclose`/`onversionchange`. Without this (before 2026-09-28), every stored photo read as missing and new photos fell to the localStorage fallback until the page was reloaded. This block is ported verbatim from the NPS sibling and must stay textually identical to it.
+
 ### Deletion
 
-`deletePhotoFromDB(key)` removes **all three tiers** (localStorage fallback, filesystem fire-and-forget, IndexedDB), and works even when IndexedDB is unavailable. Callers:
+`deletePhotoFromDB(key)` removes **all three tiers** (localStorage fallback, filesystem, IndexedDB — its promise resolves only once the filesystem and IndexedDB copies are both gone), and works even when IndexedDB is unavailable. Callers:
 - single-entry delete (which previously orphaned photo bytes — fixed in build 11) and post-export batch delete;
 - Save Edit, for the photos the edit replaced or removed;
 - `discardDraftPhotos()` — Cancel Edit, loading another entry over an unsaved draft, and deleting the entry being edited;
@@ -282,7 +286,8 @@ Selecting a citation writes `"CODE — regulation"` (or bare code) into the hidd
 3. A second canvas produces the ~80 px thumbnail (JPEG q=0.4) stored inline in the entry.
 4. Bytes go through the verified durable-write path (§7); the slot badge reflects the outcome.
 5. **GPS auto-capture**: if the draft has no fix yet, a silent `captureGPS(true)` fires with each photo (high accuracy, 15 s timeout, no error UI in silent mode).
-6. **Save & New during processing**: if the form moves to another entry before the image has decoded, the photo is dropped with a "retake it" warning rather than landing in the wrong entry. If the entry is saved while the bytes are still being written, the write finishes against the photo record the entry already holds (its `unsaved` flag is updated and re-persisted), and the new blank form is left untouched. A photo whose form was cleared (not saved) mid-write has its bytes deleted.
+6. **Capture registry**: `photoCaptureStarted(key)` / `photoCaptureDone(key)` track every photo still being read, resized or written (cleared on every exit, including unreadable files via `img.onerror`/`reader.onerror`); `photoCaptureBusy()` is what Save Edit checks. Entries older than 30 s are ignored, so a capture that died can never block saving for good. Ported verbatim from NPS.
+7. **Save & New during processing**: if the form moves to another entry before the image has decoded, the photo is dropped with a "retake it" warning rather than landing in the wrong entry. If the entry is saved while the bytes are still being written, the write finishes against the photo record the entry already holds (its `unsaved` flag is updated and re-persisted), and the new blank form is left untouched. A photo whose form was cleared (not saved) mid-write has its bytes deleted.
 
 Photos 1–2 are fixed slots (`p_main`, `p_wide`); "Add Photo" appends `p_extra_N` slots, removable and renumbered live; edit mode and draft-restore both rebuild extra slots from data.
 
@@ -326,7 +331,7 @@ USFS_Data_MMDDYY.csv
 
 Small but load-bearing — it has caused more field bugs than any other file.
 
-- `CACHE_NAME = 'usfs-collector-v1.15'` — **must be bumped whenever any cached file changes** (`index.html`, `sw.js` itself, `manifest.json`, either data JSON, the `vendor/` libraries). The bump is what makes installed web/PWA copies pick up changes.
+- `CACHE_NAME = 'usfs-collector-v1.16'` — **must be bumped whenever any cached file changes** (`index.html`, `sw.js` itself, `manifest.json`, either data JSON, the `vendor/` libraries). The bump is what makes installed web/PWA copies pick up changes.
 - **The service worker is web-only.** The iOS app loads its files from Capacitor's `capacitor://localhost` scheme and has no App-Bound Domains configured, and iOS web views only run service workers for app-bound http(s) domains — so in the iOS app `register()` fails silently (its promise is caught) and the app always runs the files in its bundle. iOS picks up changes only through a new TestFlight build, and SW caching problems can't affect it. (WEB_TO_TESTFLIGHT_PLAYBOOK.md describes a SW serving stale files inside the iOS app; given the above, that was most likely a web-channel symptom.)
 - Precache list: `./`, `index.html`, `manifest.json`, both data JSONs, `vendor/jszip.min.js`, `vendor/exceljs.min.js`.
 - **Install:** `cache.addAll` with every request created as `new Request(url, {cache:'reload'})`. The `reload` is critical: without it the SW install reads through the **browser HTTP cache**, and a stale `max-age` copy of the data JSON gets baked into the brand-new SW cache — this exact bug shipped day-old citation data in July 2026 despite a cache bump. `skipWaiting()` activates immediately.
@@ -355,7 +360,7 @@ Consumes pre-downloaded USFS ArcGIS EDW exports: `offices_raw.json` (`EDW_FSOffi
 
 - All data is client-side; the app makes no network writes anywhere, and loads no third-party code at runtime (libraries are vendored and hash-verified). Exports leave the device only through the user's own share-sheet action.
 - No accounts, no auth, no cookies, no analytics. The public Azure URL serves only the static app.
-- XSS surface: the saved-entries list, citation search results, and the selected-citation card pass text through `esc()`; the location picker escapes `<` and single quotes. The app never renders remote content.
+- XSS surface: the saved-entries list, citation search results, and the selected-citation card pass text through `esc()`. The location picker puts each name into an inline `onclick`, so names are escaped for both layers — backslashes and apostrophes for the JavaScript string, then `&` and `"` for the HTML attribute (19 real forest names contain double quotes, e.g. `DIMOND "O"`, and could not be picked before 2026-09-28). The app never renders remote content.
 - The privacy policy (`privacy.html`) exists to satisfy App Store review; it accurately states data never leaves the device.
 
 ## 16. Known constraints & sharp edges (institutional memory)
